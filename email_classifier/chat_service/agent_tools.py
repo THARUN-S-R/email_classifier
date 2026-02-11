@@ -6,6 +6,8 @@ import os
 import re
 from typing import Any
 
+import nltk
+from nltk.corpus import stopwords as nltk_stopwords
 from weaviate.classes.query import Filter, Rerank
 
 from email_classifier.shared.config import SUMMARY_FETCH_LIMIT, THREAD_FETCH_LIMIT
@@ -16,68 +18,9 @@ logger = logging.getLogger("email_classifier.agent_tools")
 
 PRIORITY_ORDER = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 
-_STOPWORDS_FALLBACK = {
-    "a",
-    "an",
-    "and",
-    "are",
-    "as",
-    "at",
-    "be",
-    "but",
-    "by",
-    "for",
-    "from",
-    "has",
-    "have",
-    "had",
-    "he",
-    "her",
-    "hers",
-    "him",
-    "his",
-    "i",
-    "in",
-    "is",
-    "it",
-    "its",
-    "me",
-    "my",
-    "of",
-    "on",
-    "or",
-    "our",
-    "ours",
-    "she",
-    "that",
-    "the",
-    "their",
-    "theirs",
-    "them",
-    "they",
-    "this",
-    "to",
-    "was",
-    "we",
-    "were",
-    "what",
-    "when",
-    "where",
-    "which",
-    "who",
-    "why",
-    "with",
-    "you",
-    "your",
-    "yours",
+_DOMAIN_STOPWORDS = {
     "please",
     "kindly",
-    "could",
-    "would",
-    "should",
-    "can",
-    "will",
-    "just",
     "need",
     "needs",
     "show",
@@ -85,20 +28,38 @@ _STOPWORDS_FALLBACK = {
     "get",
     "find",
     "list",
-    "any",
-    "all",
     "under",
     "about",
     "regarding",
 }
 _TOKEN_RE = re.compile(r"[A-Za-z0-9'-]+")
+_STOPWORDS: set[str] | None = None
+
+
+def _get_stopwords() -> set[str]:
+    global _STOPWORDS
+    if _STOPWORDS is not None:
+        return _STOPWORDS
+    try:
+        _STOPWORDS = set(nltk_stopwords.words("english")) | _DOMAIN_STOPWORDS
+        return _STOPWORDS
+    except LookupError:
+        try:
+            nltk.download("stopwords", quiet=True)
+            _STOPWORDS = set(nltk_stopwords.words("english")) | _DOMAIN_STOPWORDS
+            return _STOPWORDS
+        except Exception as e:
+            logger.warning("Failed to load NLTK stopwords, using domain-only stopwords: %s", e)
+            _STOPWORDS = set(_DOMAIN_STOPWORDS)
+            return _STOPWORDS
 
 
 def _clean_query(query: str) -> str:
     if not query:
         return ""
+    stop_words = _get_stopwords()
     tokens = _TOKEN_RE.findall(query.lower())
-    kept = [t for t in tokens if t not in _STOPWORDS_FALLBACK and len(t) > 1]
+    kept = [t for t in tokens if t not in stop_words and len(t) > 1]
     return " ".join(kept) if kept else query
 
 
