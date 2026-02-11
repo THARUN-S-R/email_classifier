@@ -93,21 +93,8 @@ LOG_LEVEL=INFO
 uv run email-classifier-ingest --input /path/to/emails.json --outdir out
 ```
 
-Or module form:
-```bash
-uv run email-classifier-ingest --input /path/to/emails.json --outdir out
-```
 
-## Watch a Folder for New JSON Files
-```bash
-uv run email-classifier-ingest --input /path/to/inbox --outdir out --watch --poll-interval 10
-```
-
-Each JSON file is processed into its own subfolder under `out/` (e.g., `out/emails_candidate/`).
-
-
-
-## Run Weaviate (Optional)
+## Run Weaviate
 ```bash
 docker compose up -d
 ```
@@ -135,10 +122,6 @@ Optional: point the UI at a different API URL:
 export AGENT_API_URL=http://localhost:8000
 ```
 
-## Notes
-- Classification and reasoning are handled by an LLM and validated against a strict JSON schema.
-- PII redaction runs before sending content to the LLM.
-- If Weaviate is disabled, outputs are still produced for the handler summary and actions.
 
 ## Developer Tooling
 Formatting:
