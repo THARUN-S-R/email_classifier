@@ -2,6 +2,27 @@
 
 LLM-assisted triage for insurance operations email threads. It classifies emails, extracts actions and entities, prioritizes urgency, produces a handler-ready summary, and optionally supports free‑text Q&A over indexed threads.
 
+## Project Description
+This project implements an AI-driven Email Triage & Workload Management System designed to assist handlers in processing high-volume inboxes.
+
+Rather than treating emails as simple text classification, the system models email handling as a multi-step cognitive workflow:
+
+- Email Type Differentiation
+- Action Extraction
+- Topic & Intent Understanding
+- Urgency & Importance Evaluation
+- Priority Assignment
+- Workload Aggregation
+- Semantic Free-Text Question Answering
+
+Built using:
+
+- LangChain framework for agentic reasoning and tool usage
+- Weaviate for hybrid semantic + structured retrieval
+- LLMs for reasoning, interpretation, and summarisation
+
+This project implements an AI-powered Email Triage & Workload Assistant that models email handling as a structured reasoning workflow rather than a simple classifier. The system differentiates email types, extracts required actions, interprets intent and topic, evaluates urgency/importance using hybrid AI-deterministic scoring, assigns priorities, aggregates handler workload, and enables semantic free-text querying over email threads via Weaviate hybrid search.
+
 ## What It Produces
 - `out/daily_summary.md` human‑readable workload summary
 - `out/actions.jsonl` per‑thread actions and rationale
@@ -15,7 +36,27 @@ LLM-assisted triage for insurance operations email threads. It classifies emails
 
 ## Install
 ```bash
-pip install -r requirements.txt
+uv sync
+```
+
+## Build Package (uv)
+The project is already configured as a package in `pyproject.toml` (Hatchling build backend).
+
+Build source and wheel distributions:
+
+```bash
+uv build
+```
+
+Artifacts are written to `dist/`:
+
+- `dist/email_classifier-<version>.tar.gz`
+- `dist/email_classifier-<version>-py3-none-any.whl`
+
+Optional local install from wheel:
+
+```bash
+uv pip install dist/*.whl
 ```
 
 ## Environment
@@ -81,7 +122,7 @@ uv run email-classifier-api
 
 Example:
 ```bash
-curl -X POST http://localhost:8000/ask \
+curl -X POST http://localhost:8000/ask_langchain \
   -H "Content-Type: application/json" \
   -d '{"question":"Was there any action required for Broker X?"}'
 ```
