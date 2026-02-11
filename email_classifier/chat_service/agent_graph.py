@@ -5,15 +5,16 @@ from typing import Any, Dict, List, Optional, TypedDict
 from langgraph.graph import StateGraph, END
 
 import logging
-from shared.models import QueryPlan, ThreadSelection
-from shared.llm import call_llm_json, call_llm, schema_str
-from shared.prompts import (
+from email_classifier.shared.models import QueryPlan, ThreadSelection
+from email_classifier.shared.config import MAX_DETAIL_CHARS
+from email_classifier.shared.llm import call_llm_json, call_llm, schema_str
+from email_classifier.shared.prompts import (
     QUERY_TO_FILTER_SYSTEM, QUERY_TO_FILTER_USER,
     QUERY_REFINE_SYSTEM, QUERY_REFINE_USER,
     THREAD_SELECT_SYSTEM, THREAD_SELECT_USER,
     AGENT_ANSWER_SYSTEM, AGENT_ANSWER_USER,
 )
-from chat_service.agent_tools import (
+from email_classifier.chat_service.agent_tools import (
     search_threads,
     semantic_search_threads,
     bm25_search_threads,
@@ -39,7 +40,7 @@ class AgentState(TypedDict, total=False):
 
 def node_interpret(state: AgentState) -> AgentState:
     model = state["model"]
-    logger.info("node_interpret: question=%s", state.get("question"))
+    logger.info("node_interpret: question_len=%s", len(state.get("question") or ""))
     schema = schema_str(QueryPlan)
     user = QUERY_TO_FILTER_USER.format(question=state["question"], schema=schema)
     raw = call_llm_json(
@@ -54,7 +55,7 @@ def node_interpret(state: AgentState) -> AgentState:
     return {"plan": plan.model_dump(), "attempts": 0, "need_refine": False}
 
 def _refine_filters(question: str, plan: QueryPlan, model: str) -> QueryPlan:
-    logger.info("refine_filters: question=%s", question)
+    logger.info("refine_filters: question_len=%s", len(question or ""))
     schema = schema_str(QueryPlan)
     user = QUERY_REFINE_USER.format(
         question=question,
@@ -110,7 +111,7 @@ def node_retrieve(state: AgentState) -> AgentState:
     question = state.get("question") or ""
     model = state.get("model") or "gpt-4o-mini"
     attempts = int(state.get("attempts", 0))
-    logger.info("node_retrieve: question=%s attempts=%s", question, attempts)
+    logger.info("node_retrieve: question_len=%s attempts=%s", len(question or ""), attempts)
     search_q = plan.search_query or question
     threads = search_threads(plan.thread_filter, limit=10)
     sem_threads = semantic_search_threads(search_q, limit=8, filter_spec=plan.thread_filter) if search_q else []
@@ -134,7 +135,9 @@ def node_retrieve(state: AgentState) -> AgentState:
 
     # If user wants details and we have a single thread, fetch messages
     q = question.lower()
-    wants_detail = any(k in q for k in ["why", "details", "latest", "messages", "what did they say", "show thread"])
+    wants_detail = bool(plan.need_detail) if plan.need_detail is not None else any(
+        k in q for k in ["why", "details", "latest", "messages", "what did they say", "show thread"]
+    )
     wants_summary = "summary" in q or "summaries" in q
     details = []
     if wants_detail and len(threads) == 1:
@@ -173,16 +176,31 @@ def node_refine(state: AgentState) -> AgentState:
     question = state.get("question") or ""
     model = state.get("model") or "gpt-4o-mini"
     attempts = int(state.get("attempts", 0)) + 1
-    logger.info("node_refine: question=%s attempts=%s", question, attempts)
+    logger.info("node_refine: question_len=%s attempts=%s", len(question or ""), attempts)
     plan2 = _refine_filters(question, plan, model)
     return {"plan": plan2.model_dump(), "attempts": attempts, "need_refine": False}
 
 def node_generate_answer(state: AgentState) -> AgentState:
     model = state["model"]
-    payload = json.dumps(state.get("retrieved", {}), indent=2, ensure_ascii=False)
+    payload = json.dumps(_sanitize_retrieved(state.get("retrieved", {})), indent=2, ensure_ascii=False)
     user = AGENT_ANSWER_USER.format(question=state["question"], retrieved_json=payload)
     ans = call_llm(model=model, system=AGENT_ANSWER_SYSTEM, user=user, max_tokens=700, temperature=0.2)
     return {"answer": ans.strip()}
+
+def _sanitize_retrieved(retrieved: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(retrieved or {})
+    details = out.get("details") or []
+    sanitized_details = []
+    for d in details:
+        if not isinstance(d, dict):
+            continue
+        d = dict(d)
+        d.pop("messages_json", None)
+        if isinstance(d.get("full_text"), str):
+            d["full_text"] = d["full_text"][:MAX_DETAIL_CHARS]
+        sanitized_details.append(d)
+    out["details"] = sanitized_details
+    return out
 
 def build_graph():
     g = StateGraph(AgentState)

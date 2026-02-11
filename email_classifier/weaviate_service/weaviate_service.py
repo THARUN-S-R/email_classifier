@@ -1,11 +1,8 @@
 from __future__ import annotations
 import weaviate
 from weaviate.classes.config import Property, DataType, Configure
-from weaviate_service.weaviate_client import get_client
-
-THREAD_CLASS = "EmailThread"
-DETAIL_CLASS = "EmailThreadDetail"
-DAILY_SUMMARY_CLASS = "DailySummary"
+from email_classifier.weaviate_service.weaviate_client import get_client
+from email_classifier.shared.config import THREAD_CLASS, DETAIL_CLASS, DAILY_SUMMARY_CLASS
 
 def ensure_schema():
     client = get_client()
@@ -32,7 +29,8 @@ def ensure_schema():
             Property(name="category", data_type=DataType.TEXT, skip_vectorization=True),
             Property(name="priority_best", data_type=DataType.TEXT, skip_vectorization=True),
             Property(name="action_required", data_type=DataType.BOOL),
-            Property(name="actions_json", data_type=DataType.TEXT, skip_vectorization=False),
+            Property(name="actions_json", data_type=DataType.TEXT, skip_vectorization=True),
+            Property(name="actions_text", data_type=DataType.TEXT),
             Property(name="counterparty", data_type=DataType.TEXT),
             Property(name="counterparty_lc", data_type=DataType.TEXT, skip_vectorization=True),
             Property(name="entities_json", data_type=DataType.TEXT, skip_vectorization=True),
@@ -46,10 +44,10 @@ def ensure_schema():
             Property(name="missing_info_json", data_type=DataType.TEXT, skip_vectorization=True),
             Property(name="handler_name", data_type=DataType.TEXT),
             Property(name="handler_name_lc", data_type=DataType.TEXT, skip_vectorization=True),
-            Property(name="handler_email", data_type=DataType.TEXT, skip_vectorization=False),
+            Property(name="handler_email", data_type=DataType.TEXT, skip_vectorization=True),
             Property(name="customer_name", data_type=DataType.TEXT),
             Property(name="customer_name_lc", data_type=DataType.TEXT, skip_vectorization=True),
-            Property(name="customer_email", data_type=DataType.TEXT, skip_vectorization=False),
+            Property(name="customer_email", data_type=DataType.TEXT, skip_vectorization=True),
             Property(name="user_email", data_type=DataType.TEXT, skip_vectorization=True),
             Property(name="user_email_lc", data_type=DataType.TEXT, skip_vectorization=True),
         ]

@@ -1,8 +1,10 @@
 from __future__ import annotations
 import logging
+import json
 from typing import Any, Dict, List, Optional
-from weaviate_service.weaviate_client import get_client
-from weaviate_service.weaviate_service import THREAD_CLASS, DETAIL_CLASS, DAILY_SUMMARY_CLASS
+from email_classifier.weaviate_service.weaviate_client import get_client
+from email_classifier.weaviate_service.weaviate_service import THREAD_CLASS, DETAIL_CLASS, DAILY_SUMMARY_CLASS
+from email_classifier.shared.config import THREAD_FETCH_LIMIT, DETAIL_FETCH_LIMIT, SUMMARY_FETCH_LIMIT
 from weaviate.classes.query import Filter
 
 logger = logging.getLogger("email_classifier.agent_tools")
@@ -90,7 +92,7 @@ def _filter_from_spec(spec: Optional[Dict[str, Any]], allowed_props: Optional[se
         fn = getattr(f, "equal", None)
     return fn(value) if fn else None
 
-def search_threads(filter_spec: Optional[Dict[str, Any]], limit: int = 10) -> List[Dict[str, Any]]:
+def search_threads(filter_spec: Optional[Dict[str, Any]], limit: int = THREAD_FETCH_LIMIT) -> List[Dict[str, Any]]:
     """
     Hybrid: deterministic structured filtering + (optionally) later semantic.
     For MVP, we do structured filtering and return the most relevant.
@@ -101,9 +103,10 @@ def search_threads(filter_spec: Optional[Dict[str, Any]], limit: int = 10) -> Li
         col = client.collections.get(THREAD_CLASS)
 
         flt = _filter_from_spec(filter_spec, allowed_props=THREAD_PROPS)
-        logger.info("search_threads: filter=%s", filter_spec)
+        logger.info("search_threads: filter=%s", _filter_summary(filter_spec))
         res = col.query.fetch_objects(limit=limit, filters=flt) if flt else col.query.fetch_objects(limit=limit)
         objs = [o.properties for o in res.objects]
+        logger.info("search_threads: fetched=%s", len(objs))
         objs.sort(key=lambda p: (_best_rank(p.get("priority_best","P3")), p.get("thread_ref","")))
         return objs
     except Exception as e:
@@ -112,15 +115,16 @@ def search_threads(filter_spec: Optional[Dict[str, Any]], limit: int = 10) -> Li
     finally:
         client.close()
 
-def semantic_search_threads(query: str, limit: int = 10, filter_spec: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+def semantic_search_threads(query: str, limit: int = THREAD_FETCH_LIMIT, filter_spec: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     client = get_client()
     try:
         client.connect()
         col = client.collections.get(THREAD_CLASS)
         flt = _filter_from_spec(filter_spec, allowed_props=THREAD_PROPS)
-        logger.info("semantic_search_threads: query=%s filter=%s", query, filter_spec)
+        logger.info("semantic_search_threads: query_len=%s filter=%s", len(query or ""), _filter_summary(filter_spec))
         res = col.query.near_text(query=query, limit=limit, filters=flt) if flt else col.query.near_text(query=query, limit=limit)
         out = [o.properties for o in res.objects]
+        logger.info("semantic_search_threads: fetched=%s", len(out))
         return out
     except Exception as e:
         logger.exception("semantic_search_threads failed: %s", e)
@@ -128,30 +132,34 @@ def semantic_search_threads(query: str, limit: int = 10, filter_spec: Optional[D
     finally:
         client.close()
 
-def bm25_search_threads(query: str, limit: int = 10, filter_spec: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+def bm25_search_threads(query: str, limit: int = THREAD_FETCH_LIMIT, filter_spec: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     client = get_client()
     try:
         client.connect()
         col = client.collections.get(THREAD_CLASS)
         flt = _filter_from_spec(filter_spec, allowed_props=THREAD_PROPS)
-        logger.info("bm25_search_threads: query=%s filter=%s", query, filter_spec)
+        logger.info("bm25_search_threads: query_len=%s filter=%s", len(query or ""), _filter_summary(filter_spec))
         res = col.query.bm25(query=query, limit=limit, filters=flt) if flt else col.query.bm25(query=query, limit=limit)
-        return [o.properties for o in res.objects]
+        out = [o.properties for o in res.objects]
+        logger.info("bm25_search_threads: fetched=%s", len(out))
+        return out
     except Exception as e:
         logger.exception("bm25_search_threads failed: %s", e)
         return []
     finally:
         client.close()
 
-def hybrid_search_threads(query: str, limit: int = 10, alpha: float = 0.5, filter_spec: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+def hybrid_search_threads(query: str, limit: int = THREAD_FETCH_LIMIT, alpha: float = 0.5, filter_spec: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     client = get_client()
     try:
         client.connect()
         col = client.collections.get(THREAD_CLASS)
         flt = _filter_from_spec(filter_spec, allowed_props=THREAD_PROPS)
-        logger.info("hybrid_search_threads: query=%s filter=%s", query, filter_spec)
+        logger.info("hybrid_search_threads: query_len=%s filter=%s", len(query or ""), _filter_summary(filter_spec))
         res = col.query.hybrid(query=query, alpha=alpha, limit=limit, filters=flt) if flt else col.query.hybrid(query=query, alpha=alpha, limit=limit)
-        return [o.properties for o in res.objects]
+        out = [o.properties for o in res.objects]
+        logger.info("hybrid_search_threads: fetched=%s", len(out))
+        return out
     except Exception as e:
         logger.exception("hybrid_search_threads failed: %s", e)
         return []
@@ -163,12 +171,10 @@ def get_thread_detail(thread_key: str) -> Optional[Dict[str, Any]]:
     try:
         client.connect()
         col = client.collections.get(DETAIL_CLASS)
-
-        res = col.query.fetch_objects(limit=200)
-        for o in res.objects:
-            p = o.properties
-            if (p.get("thread_key","").lower() == thread_key.lower()) or (p.get("thread_ref","").lower() == thread_key.lower()):
-                return p
+        flt = Filter.by_property("thread_key").equal(thread_key)
+        res = col.query.fetch_objects(limit=1, filters=flt)
+        if res.objects:
+            return res.objects[0].properties
         return None
     except Exception as e:
         logger.exception("get_thread_detail failed: %s", e)
@@ -176,13 +182,13 @@ def get_thread_detail(thread_key: str) -> Optional[Dict[str, Any]]:
     finally:
         client.close()
 
-def semantic_search_details(query: str, limit: int = 8, filter_spec: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+def semantic_search_details(query: str, limit: int = DETAIL_FETCH_LIMIT, filter_spec: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     client = get_client()
     try:
         client.connect()
         col = client.collections.get(DETAIL_CLASS)
         flt = _filter_from_spec(filter_spec, allowed_props=DETAIL_PROPS)
-        logger.info("semantic_search_details: query=%s filter=%s", query, filter_spec)
+        logger.info("semantic_search_details: query_len=%s filter=%s", len(query or ""), _filter_summary(filter_spec))
         res = col.query.near_text(query=query, limit=limit, filters=flt) if flt else col.query.near_text(query=query, limit=limit)
         out = [o.properties for o in res.objects]
         return out
@@ -192,45 +198,51 @@ def semantic_search_details(query: str, limit: int = 8, filter_spec: Optional[Di
     finally:
         client.close()
 
-def bm25_search_details(query: str, limit: int = 8, filter_spec: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+def bm25_search_details(query: str, limit: int = DETAIL_FETCH_LIMIT, filter_spec: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     client = get_client()
     try:
         client.connect()
         col = client.collections.get(DETAIL_CLASS)
         flt = _filter_from_spec(filter_spec, allowed_props=DETAIL_PROPS)
-        logger.info("bm25_search_details: query=%s filter=%s", query, filter_spec)
+        logger.info("bm25_search_details: query_len=%s filter=%s", len(query or ""), _filter_summary(filter_spec))
         res = col.query.bm25(query=query, limit=limit, filters=flt) if flt else col.query.bm25(query=query, limit=limit)
-        return [o.properties for o in res.objects]
+        out = [o.properties for o in res.objects]
+        logger.info("semantic_search_details: fetched=%s", len(out))
+        return out
     except Exception as e:
         logger.exception("bm25_search_details failed: %s", e)
         return []
     finally:
         client.close()
 
-def hybrid_search_details(query: str, limit: int = 8, alpha: float = 0.5, filter_spec: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+def hybrid_search_details(query: str, limit: int = DETAIL_FETCH_LIMIT, alpha: float = 0.5, filter_spec: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     client = get_client()
     try:
         client.connect()
         col = client.collections.get(DETAIL_CLASS)
         flt = _filter_from_spec(filter_spec, allowed_props=DETAIL_PROPS)
-        logger.info("hybrid_search_details: query=%s filter=%s", query, filter_spec)
+        logger.info("hybrid_search_details: query_len=%s filter=%s", len(query or ""), _filter_summary(filter_spec))
         res = col.query.hybrid(query=query, alpha=alpha, limit=limit, filters=flt) if flt else col.query.hybrid(query=query, alpha=alpha, limit=limit)
-        return [o.properties for o in res.objects]
+        out = [o.properties for o in res.objects]
+        logger.info("bm25_search_details: fetched=%s", len(out))
+        return out
     except Exception as e:
         logger.exception("hybrid_search_details failed: %s", e)
         return []
     finally:
         client.close()
 
-def get_daily_summaries(filter_spec: Optional[Dict[str, Any]], limit: int = 5) -> List[Dict[str, Any]]:
+def get_daily_summaries(filter_spec: Optional[Dict[str, Any]], limit: int = SUMMARY_FETCH_LIMIT) -> List[Dict[str, Any]]:
     client = get_client()
     try:
         client.connect()
         col = client.collections.get(DAILY_SUMMARY_CLASS)
         flt = _filter_from_spec(filter_spec, allowed_props=SUMMARY_PROPS)
-        logger.info("get_daily_summaries: filter=%s", filter_spec)
+        logger.info("get_daily_summaries: filter=%s", _filter_summary(filter_spec))
         res = col.query.fetch_objects(limit=limit, filters=flt) if flt else col.query.fetch_objects(limit=limit)
-        return [o.properties for o in res.objects]
+        out = [o.properties for o in res.objects]
+        logger.info("hybrid_search_details: fetched=%s", len(out))
+        return out
     except Exception as e:
         logger.exception("get_daily_summaries failed: %s", e)
         return []
@@ -243,7 +255,9 @@ def bm25_search_summaries(query: str, limit: int = 5) -> List[Dict[str, Any]]:
         client.connect()
         col = client.collections.get(DAILY_SUMMARY_CLASS)
         res = col.query.bm25(query=query, limit=limit)
-        return [o.properties for o in res.objects]
+        out = [o.properties for o in res.objects]
+        logger.info("get_daily_summaries: fetched=%s", len(out))
+        return out
     except Exception as e:
         logger.exception("bm25_search_summaries failed: %s", e)
         return []
@@ -262,3 +276,15 @@ def hybrid_search_summaries(query: str, limit: int = 5, alpha: float = 0.5) -> L
         return []
     finally:
         client.close()
+def _filter_summary(filter_spec: Optional[Dict[str, Any]]) -> str:
+    if not filter_spec:
+        return "none"
+    def _strip(spec: Dict[str, Any]) -> Dict[str, Any]:
+        out = {k: v for k, v in spec.items() if k in ("path","operator","operands")}
+        if "operands" in out and isinstance(out["operands"], list):
+            out["operands"] = [_strip(o) for o in out["operands"] if isinstance(o, dict)]
+        return out
+    try:
+        return json.dumps(_strip(filter_spec), ensure_ascii=False)
+    except Exception:
+        return "unserializable"

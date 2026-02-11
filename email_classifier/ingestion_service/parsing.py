@@ -1,7 +1,8 @@
 from __future__ import annotations
 from typing import Any, List, Dict
-from shared.models import EmailThread, EmailMessage
-from shared.utils import strip_html
+from datetime import datetime, timezone
+from email_classifier.shared.models import EmailThread, EmailMessage
+from email_classifier.shared.utils import strip_html, parse_datetime
 
 def parse_threads(raw: Any) -> List[EmailThread]:
     threads_raw: List[Any] = []
@@ -50,6 +51,19 @@ def parse_threads(raw: Any) -> List[EmailThread]:
             if isinstance(body, str):
                 m["body"] = strip_html(body)
             msgs.append(EmailMessage.model_validate(m))
+        # Sort by sent_at when available; stable fallback to input order
+        msgs_with_idx = []
+        for idx, msg in enumerate(msgs):
+            dt = parse_datetime(msg.sent_at)
+            msgs_with_idx.append((idx, dt, msg))
+        msgs_with_idx.sort(
+            key=lambda im: (
+                im[1] is None,
+                im[1] or datetime.min.replace(tzinfo=timezone.utc),
+                im[0],
+            )
+        )
+        msgs = [m for _, _, m in msgs_with_idx]
         thread_id = t.get("thread_id") or t.get("id") or t.get("threadId")
         if not thread_id and msgs:
             thread_id = msgs[0].message_id or t.get("messages")[0].get("thread_id")

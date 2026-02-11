@@ -2,6 +2,9 @@ from __future__ import annotations
 import os
 from urllib.parse import urlparse
 import weaviate
+import atexit
+
+_CLIENT: weaviate.WeaviateClient | None = None
 
 def _env_int(name: str, default: int) -> int:
     v = os.getenv(name)
@@ -13,6 +16,9 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 def get_client() -> weaviate.WeaviateClient:
+    global _CLIENT
+    if _CLIENT is not None:
+        return _CLIENT
     url = os.getenv("WEAVIATE_URL", "http://localhost:8080")
     parsed = urlparse(url)
 
@@ -24,7 +30,7 @@ def get_client() -> weaviate.WeaviateClient:
     grpc_port = _env_int("WEAVIATE_GRPC_PORT", 50051)
     grpc_secure = os.getenv("WEAVIATE_GRPC_SECURE", "false").lower() == "true"
 
-    return weaviate.connect_to_custom(
+    _CLIENT = weaviate.connect_to_custom(
         http_host=http_host,
         http_port=http_port,
         http_secure=http_secure,
@@ -32,3 +38,5 @@ def get_client() -> weaviate.WeaviateClient:
         grpc_port=grpc_port,
         grpc_secure=grpc_secure,
     )
+    atexit.register(_CLIENT.close)
+    return _CLIENT

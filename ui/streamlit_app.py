@@ -9,6 +9,7 @@ import requests
 import streamlit as st
 
 DEFAULT_API_URL = os.getenv("AGENT_API_URL", "http://localhost:8000")
+DEFAULT_OUTDIR = os.getenv("OUT_DIR", "out")
 
 st.set_page_config(page_title="Email Ops Assistant", layout="wide")
 
@@ -18,7 +19,8 @@ st.caption("Read-only assistant for prioritising workload and answering ad-hoc q
 with st.sidebar:
     st.header("Settings")
     api_url = st.text_input("Agent API URL", value=DEFAULT_API_URL)
-    timeout_s = st.slider("Request timeout (seconds)", 10, 180, 60)
+    timeout_s = st.slider("Request timeout (seconds)", 10, 300, 200)
+    outdir = st.text_input("Outdir (daily_summary.md)", value=DEFAULT_OUTDIR)
 
     st.divider()
     st.header("Suggested questions")
@@ -38,7 +40,9 @@ if "last_result" not in st.session_state:
 if "session_id" not in st.session_state:
     st.session_state["session_id"] = str(uuid.uuid4())
 
-col_chat, col_debug = st.columns([2, 1], gap="large")
+tab_chat, tab_summary = st.tabs(["Chat", "Daily Summary"])
+
+col_chat, col_debug = tab_chat.columns([2, 1], gap="large")
 
 def call_agent(question: str) -> Dict[str, Any]:
     url = api_url.rstrip("/") + "/ask_langchain" #ask_langchain ask
@@ -80,6 +84,16 @@ with col_debug:
         st.session_state["last_result"] = None
         st.session_state["session_id"] = str(uuid.uuid4())
         st.rerun()
+
+# Daily Summary tab
+with tab_summary:
+    st.subheader("Daily Summary")
+    summary_path = os.path.join(outdir, "daily_summary.md")
+    if not os.path.exists(summary_path):
+        st.warning(f"Summary not found at {summary_path}")
+    else:
+        with open(summary_path, "r", encoding="utf-8") as f:
+            st.markdown(f.read())
 
 # Fixed input at page bottom
 user_q = st.chat_input("Ask about workload, claims, brokers, actions, priorities…")

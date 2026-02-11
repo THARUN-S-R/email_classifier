@@ -13,3 +13,7 @@ langchain==0.2.16
 langchain-openai==0.1.25
 langchain-community==0.2.16
 pymongo==4.8.0
+black==24.8.0
+ruff==0.6.3
+mypy==1.11.1
+hatchling==1.25.0

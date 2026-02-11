@@ -89,5 +89,9 @@ htmlcov/
 # ----------------------------------
 tmp/
 temp/
-weaviate-data/*
-./v1/*
+weaviate_data/
+v1/
+new_out/
+out/
+out_1/
+research/

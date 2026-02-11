@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+PROMPT_VERSION = "v3"
+
 THREAD_TRIAGE_SYSTEM = """You are an insurance operations triage assistant for a claims handler.
+PROMPT_VERSION: v3
 Return ONLY valid JSON that matches the provided schema. Do not invent facts.
-If uncertain, list missing_info and set confidence lower. Keep rationale to 1-2 lines.
-If email_type is not ACTION_REQUIRED then action_required=false and actions=[]."""
+Use email_type enum: ACTION_REQUIRED | INFORMATIONAL_ARCHIVE | IRRELEVANT.
+If email_type is ACTION_REQUIRED, action_required=true and actions must be a non-empty list with priority + rationale.
+If email_type is not ACTION_REQUIRED then action_required=false and actions=[].
+If uncertain, list missing_info, set confidence lower, and set needs_human_review=true.
+Keep rationale to 1-2 lines."""
 
 THREAD_TRIAGE_USER = """You will receive one EMAIL THREAD (sequence of messages, oldest->newest).
 Your job:
@@ -12,6 +18,7 @@ Your job:
 3) Extract key entities: claim_ref, customer/policyholder, counterparty (broker/vendor), dates/times, crime refs, etc.
 4) Identify the handler name/email and customer name/email when available (use signature lines and sender addresses).
 5) Recommend archive/keep/ignore.
+6) Provide a short rationale and set needs_human_review=true if uncertain.
 
 Priority rules:
 - P0: blocking work / requires same-day authority / imminent SLA breach / “order today” / complaint / regulatory urgency
@@ -30,6 +37,7 @@ THREAD (oldest -> newest):
 
 # For agent: question -> QueryPlan (Weaviate filter syntax)
 QUERY_TO_FILTER_SYSTEM = """Build Weaviate filter JSON for each collection.
+PROMPT_VERSION: v3
 Return ONLY valid JSON matching the schema. Do not include extra keys.
 Use Weaviate v4 filter syntax:
 - Leaf: {"path":["field"], "operator":"Equal|Like|GreaterThan|GreaterThanEqual|LessThan|LessThanEqual", "valueText|valueNumber|valueBoolean": ...}
@@ -48,9 +56,11 @@ Rules:
 - If user asks for priority cutoffs (e.g., 'P1 or higher'), filter priority_best in allowed values via Or.
 - If user mentions a date or time range, filter latest_sent_at (thread/detail) using GreaterThanEqual/LessThanEqual on ISO strings and summary_filter day Equal (YYYY-MM-DD).
 - Set search_query to the raw user question if free-text retrieval is helpful; otherwise null.
+- Set need_detail=true if the user explicitly asks for messages, thread details, or full conversation.
 If uncertain, keep filters null rather than guessing."""
 
 QUERY_REFINE_SYSTEM = """Refine Weaviate filter JSON when no results are found.
+PROMPT_VERSION: v3
 Return ONLY valid JSON matching the schema. Do not include extra keys.
 Relax filters to increase recall while keeping essential constraints (like user_email and dates if provided).
 Do not invent new values."""
@@ -66,8 +76,11 @@ Schema:
 """
 
 THREAD_SELECT_SYSTEM = """Select which retrieved threads are relevant to the user's question.
+PROMPT_VERSION: v3
 Return ONLY valid JSON matching the schema. Do not include extra keys.
-Only select thread_keys that are clearly relevant. If none are relevant, return an empty list."""
+Be strict: only select threads where the summary/topic/counterparty clearly matches the question.
+Do NOT select based solely on participant names if the topic or content does not match.
+If none are clearly relevant, return an empty list."""
 
 THREAD_SELECT_USER = """User question:
 {question}
@@ -88,9 +101,11 @@ Schema:
 
 # Agent final answer grounded in retrieval results
 AGENT_ANSWER_SYSTEM = """You are a read-only insurance ops assistant.
+PROMPT_VERSION: v3
 Answer ONLY using the retrieved thread records, detail records, and daily summaries provided.
 Be concise and actionable. Mention claim refs, priorities, and actions.
-If there are no matching records, try again and if no data found say so clearly."""
+Always include an "Evidence" section listing the thread_ref values used.
+If there are no matching records, say so clearly."""
 
 AGENT_ANSWER_USER = """User question:
 {question}

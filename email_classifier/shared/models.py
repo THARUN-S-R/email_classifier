@@ -46,6 +46,7 @@ class ThreadTriage(BaseModel):
 
     confidence: float = Field(ge=0.0, le=1.0, default=0.5)
     rationale: Optional[str] = None
+    needs_human_review: bool = False
 
     handler_name: Optional[str] = None
     handler_email: Optional[str] = None
@@ -76,3 +77,4 @@ class QueryPlan(BaseModel):
     detail_filter: Optional[Dict[str, Any]] = None
     summary_filter: Optional[Dict[str, Any]] = None
     search_query: Optional[str] = None
+    need_detail: Optional[bool] = None

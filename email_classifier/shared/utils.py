@@ -1,7 +1,8 @@
 from __future__ import annotations
 import json, os, re
 from typing import Any, Optional, Dict
-from datetime import datetime
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from bs4 import BeautifulSoup
 
 CLAIM_REF_RE = re.compile(r"\bPIN-[A-Z]{3}-\d{5,}\b", re.IGNORECASE)
@@ -57,6 +58,15 @@ def redact_pii(text: str) -> str:
     t = PHONE_RE.sub("[REDACTED_PHONE]", t)
     return t
 
+def redact_for_llm(text: str) -> str:
+    return redact_pii(text)
+
+def redact_for_index(text: str) -> str:
+    return redact_pii(text)
+
+def raw_store(text: str) -> str:
+    return text or ""
+
 def extract_signature_name(text: str) -> Optional[str]:
     if not text:
         return None
@@ -95,10 +105,23 @@ def parse_datetime(value: Optional[str]) -> Optional[datetime]:
     s = str(value).strip()
     if not s:
         return None
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
     # Try ISO first
     try:
-        return datetime.fromisoformat(s)
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
     except ValueError:
+        pass
+    # RFC2822 / email date formats
+    try:
+        dt = parsedate_to_datetime(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
         pass
     # Common date/time formats
     fmts = [
@@ -116,7 +139,8 @@ def parse_datetime(value: Optional[str]) -> Optional[datetime]:
     ]
     for fmt in fmts:
         try:
-            return datetime.strptime(s, fmt)
+            dt = datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+            return dt
         except ValueError:
             continue
     return None

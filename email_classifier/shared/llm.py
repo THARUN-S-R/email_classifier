@@ -110,3 +110,34 @@ def call_llm_json(
             )
             logger.warning("Invalid JSON from LLM (attempt %s/%s): %s", attempt + 1, max_attempts, e)
     raise last_err  # type: ignore[misc]
+
+def call_llm_json_model(
+    model: str,
+    system: str,
+    user: str,
+    model_cls: Type[BaseModel],
+    temperature: float = 0.1,
+    max_tokens: int = 1200,
+    timeout: int = 60,
+    max_attempts: int = 3,
+) -> BaseModel:
+    schema = schema_str(model_cls)
+    try:
+        raw = call_llm_json(
+            model=model,
+            system=system,
+            user=user,
+            schema=schema,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            timeout=timeout,
+            max_attempts=max_attempts,
+        )
+        return model_cls.model_validate(raw)
+    except Exception as e:
+        logger.warning("Model validation failed: %s", e)
+        # Best-effort fallback: mark as needs_human_review if supported
+        data = {}
+        if "needs_human_review" in model_cls.model_fields:
+            data["needs_human_review"] = True
+        return model_cls.model_validate(data)

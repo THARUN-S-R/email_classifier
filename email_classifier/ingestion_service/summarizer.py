@@ -1,7 +1,7 @@
 from __future__ import annotations
 from typing import List
 from datetime import datetime
-from shared.models import ThreadTriage
+from email_classifier.shared.models import ThreadTriage
 
 P_RANK = {"P0":0, "P1":1, "P2":2, "P3":3}
 

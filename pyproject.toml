@@ -23,3 +23,55 @@ dependencies = [
     "weaviate>=0.1.2",
     "weaviate-client>=4.19.0",
 ]
+
+[project.scripts]
+email-classifier = "email_classifier.cli:main"
+email-classifier-api = "email_classifier.cli:run_api"
+email-classifier-ingest = "email_classifier.cli:run_ingest"
+
+[build-system]
+requires = ["hatchling>=1.25.0"]
+build-backend = "hatchling.build"
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+include = "\\.pyi?$"
+exclude = """
+(
+  /\\.venv
+| /venv
+| /build
+| /dist
+| /weaviate_data
+| /out
+| /out_.*
+| /outputs
+)
+"""
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = [
+  ".venv",
+  "venv",
+  "build",
+  "dist",
+  "weaviate_data",
+  "out",
+  "outputs",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unreachable = true
+no_implicit_optional = true
+exclude = "(^\\.venv/|^venv/|^weaviate_data/|^out/|^outputs/)"

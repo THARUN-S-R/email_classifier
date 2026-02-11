@@ -1,28 +1,26 @@
 from __future__ import annotations
 
-import argparse, os, json, logging, sys
+import argparse, os, json, logging, hashlib, uuid
 from pathlib import Path
 from typing import List
 from dotenv import load_dotenv
 from tqdm import tqdm
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.append(str(ROOT))
 
-from shared.models import EmailThread, ThreadTriage
-from shared.utils import (
+from email_classifier.shared.models import EmailThread, ThreadTriage
+from email_classifier.shared.utils import (
     ensure_dir, load_json, write_text, write_json, append_jsonl,
-    extract_claim_ref, sender_domain, redact_pii,
+    extract_claim_ref, sender_domain, redact_for_llm, redact_for_index, raw_store,
     extract_signature_name, extract_salutation_name, name_from_email,
     parse_datetime
 )
-from shared.llm import call_llm_json, schema_str
-from shared.prompts import THREAD_TRIAGE_SYSTEM, THREAD_TRIAGE_USER
-from ingestion_service.parsing import parse_threads
-from ingestion_service.summarizer import render_summary_md, render_user_day_summary_md
-from shared.logging import setup_logging
-from shared.config import warn_if_missing_llm_keys
+from email_classifier.shared.llm import call_llm_json_model, schema_str
+from email_classifier.shared.prompts import THREAD_TRIAGE_SYSTEM, THREAD_TRIAGE_USER
+from email_classifier.ingestion_service.parsing import parse_threads
+from email_classifier.ingestion_service.summarizer import render_summary_md, render_user_day_summary_md
+from email_classifier.shared.logging import setup_logging
+from email_classifier.shared.config import warn_if_missing_llm_keys, CONFIDENCE_MIN, MAX_LLM_THREAD_CHARS
 
 P_RANK = {"P0":0, "P1":1, "P2":2, "P3":3}
 logger = logging.getLogger("email_classifier.ingest")
@@ -160,7 +158,7 @@ def normalize_triage(triage: ThreadTriage, ref_hint: str | None) -> ThreadTriage
     return triage
 
 
-def format_thread_for_llm(thread: EmailThread, handler_domains: List[str], max_chars: int = 2200) -> tuple[str, str, str]:
+def format_thread_for_llm(thread: EmailThread, handler_domains: List[str], max_chars: int = MAX_LLM_THREAD_CHARS) -> tuple[str, str, str]:
     # returns (messages_text, thread_ref_hint, latest_message_text)
     thread_ref_hint = None
     msgs_out = []
@@ -170,7 +168,7 @@ def format_thread_for_llm(thread: EmailThread, handler_domains: List[str], max_c
     for i, m in enumerate(thread.messages):
         subject = m.subject or ""
         body = (m.body or "")
-        body = redact_pii(body)  # PII redaction before LLM
+        body = redact_for_llm(body)  # PII redaction before LLM
         if len(body) > max_chars:
             body = body[:max_chars] + "\n...[truncated]"
         frm = m.sent_from or ""
@@ -186,7 +184,7 @@ def format_thread_for_llm(thread: EmailThread, handler_domains: List[str], max_c
 
     if thread.messages:
         lm = thread.messages[-1]
-        latest_msg = f"FROM: {lm.sent_from}\nSUBJECT: {lm.subject}\nBODY:\n{redact_pii(lm.body or '')}"
+        latest_msg = f"FROM: {lm.sent_from}\nSUBJECT: {lm.subject}\nBODY:\n{redact_for_llm(lm.body or '')}"
 
     return "\n---\n".join(msgs_out), (thread_ref_hint or ""), (latest_msg or "")
 
@@ -198,23 +196,39 @@ def build_thread_full_text(thread: EmailThread) -> str:
                 f"[{i}] FROM: {m.sent_from or ''}",
                 f"SUBJECT: {m.subject or ''}",
                 f"SENT_AT: {m.sent_at or ''}",
-                f"BODY:\n{redact_pii(m.body or '')}",
+                f"BODY:\n{redact_for_index(m.body or '')}",
             ])
         )
     return "\n---\n".join(parts)
 
+def stable_thread_key(thread: EmailThread) -> str:
+    if thread.thread_id:
+        return thread.thread_id
+    msg_ids = [m.message_id for m in thread.messages if m.message_id]
+    if msg_ids:
+        base = "|".join(sorted(msg_ids))
+    else:
+        parts = []
+        for i, m in enumerate(thread.messages):
+            parts.append(f"{i}|{m.sent_from or ''}|{m.subject or ''}|{m.sent_at or ''}|{(m.body or '')[:200]}")
+        base = "|".join(parts)
+    return hashlib.sha256(base.encode("utf-8")).hexdigest()
+
+def stable_uuid(thread_key: str) -> str:
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"email_classifier:{thread_key}"))
+
 def build_participants_text(triage: ThreadTriage, participants: dict, user_email: Optional[str]) -> str:
+    def _keep(v: Optional[str]) -> Optional[str]:
+        if not v:
+            return None
+        return None if "@" in v else v
+
     vals = [
-        triage.handler_name,
-        triage.handler_email,
-        triage.customer_name,
-        triage.customer_email,
-        (triage.entities.get("counterparty") if isinstance(triage.entities, dict) else None),
-        participants.get("handler_name"),
-        participants.get("handler_email"),
-        participants.get("customer_name"),
-        participants.get("customer_email"),
-        user_email,
+        _keep(triage.handler_name),
+        _keep(triage.customer_name),
+        _keep(triage.entities.get("counterparty") if isinstance(triage.entities, dict) else None),
+        _keep(participants.get("handler_name")),
+        _keep(participants.get("customer_name")),
     ]
     return " | ".join([v for v in vals if v])
 
@@ -233,8 +247,8 @@ def main():
 
     ensure_dir(args.outdir)
     if not args.no_weaviate:
-        from weaviate_service.weaviate_service import ensure_schema, THREAD_CLASS, DETAIL_CLASS
-        from weaviate_service.weaviate_client import get_client
+        from email_classifier.weaviate_service.weaviate_service import ensure_schema, THREAD_CLASS, DETAIL_CLASS
+        from email_classifier.weaviate_service.weaviate_client import get_client
         ensure_schema()
 
     try:
@@ -250,8 +264,8 @@ def main():
     summary_col = None
     if not args.no_weaviate:
         try:
-            from weaviate_service.weaviate_service import THREAD_CLASS, DETAIL_CLASS, DAILY_SUMMARY_CLASS
-            from weaviate_service.weaviate_client import get_client
+            from email_classifier.weaviate_service.weaviate_service import THREAD_CLASS, DETAIL_CLASS, DAILY_SUMMARY_CLASS
+            from email_classifier.weaviate_service.weaviate_client import get_client
             client = get_client()
             client.connect()
             threads_col = client.collections.get(THREAD_CLASS)
@@ -266,8 +280,6 @@ def main():
 
     triages: List[ThreadTriage] = []
 
-    schema = schema_str(ThreadTriage)
-
     default_user = os.getenv("MAILBOX_EMAIL") or None
     triage_index: List[dict] = []
     for idx, thread in enumerate(tqdm(threads, desc="Triaging threads")):
@@ -277,19 +289,22 @@ def main():
             user_email = extract_user_email(thread, handler_domains, default_user)
 
             user_prompt = THREAD_TRIAGE_USER.format(
-                schema=schema,
+                schema=schema_str(ThreadTriage),
                 handler_domains=handler_domains,
                 messages=messages_text
             )
 
-            raw_out = call_llm_json(
+            raw_out = call_llm_json_model(
                 model=model,
                 system=THREAD_TRIAGE_SYSTEM,
                 user=user_prompt,
-                schema=schema,
                 temperature=0.1,
             )
-            triage = ThreadTriage.model_validate(raw_out)
+            triage = raw_out
+            if triage.confidence < CONFIDENCE_MIN:
+                triage.needs_human_review = True
+            if triage.missing_info:
+                triage.needs_human_review = True
 
             triage = normalize_triage(triage, ref_hint)
             triage = reconcile_participants(triage, participants, handler_domains)
@@ -308,13 +323,8 @@ def main():
             triage = stabilize_rules(triage, messages_text.lower())
             triages.append(triage)
 
-            thread_key = (
-                thread.thread_id
-                or triage.thread_ref
-                or ref_hint
-                or (thread.messages[0].message_id if thread.messages else "")
-                or f"thread-{idx}"
-            )
+            thread_key = stable_thread_key(thread)
+            thread_uuid = stable_uuid(thread_key)
             if threads_col is not None and detail_col is not None:
                 # Upsert thread object (Weaviate handles vectorization)
                 # Compute latest/earliest sent_at
@@ -324,6 +334,7 @@ def main():
                 earliest_dt = min(dts) if dts else None
                 participants_text = build_participants_text(triage, participants, user_email)
                 threads_col.data.insert(
+                    uuid=thread_uuid,
                     properties={
                         "thread_id": thread.thread_id or "",
                         "thread_key": thread_key or "",
@@ -335,6 +346,7 @@ def main():
                         "priority_best": best_priority(triage),
                         "action_required": triage.action_required,
                         "actions_json": json.dumps([a.model_dump() for a in triage.actions], ensure_ascii=False),
+                        "actions_text": " | ".join([a.action_item for a in triage.actions if a.action_item]),
                         "counterparty": (triage.entities.get("counterparty") if isinstance(triage.entities, dict) else "") or "",
                         "counterparty_lc": ((triage.entities.get("counterparty") if isinstance(triage.entities, dict) else "") or "").lower(),
                         "entities_json": json.dumps(triage.entities, ensure_ascii=False),
@@ -358,6 +370,7 @@ def main():
                 )
 
                 detail_col.data.insert(
+                    uuid=thread_uuid,
                     properties={
                         "thread_id": thread.thread_id or "",
                         "thread_key": thread_key or "",

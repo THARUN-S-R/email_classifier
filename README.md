@@ -49,24 +49,24 @@ LOG_LEVEL=INFO
 
 ## Run Ingestion (Generate Summary + Actions)
 ```bash
-python ingestion_service/ingest.py --input /path/to/emails.json --outdir out
+uv run email-classifier-ingest --input /path/to/emails.json --outdir out
 ```
 
 Or module form:
 ```bash
-python -m ingestion_service.ingest --input /path/to/emails.json --outdir out
+uv run email-classifier-ingest --input /path/to/emails.json --outdir out
 ```
 
 ## Watch a Folder for New JSON Files
 ```bash
-python ingestion_service/ingest.py --input /path/to/inbox --outdir out --watch --poll-interval 10
+uv run email-classifier-ingest --input /path/to/inbox --outdir out --watch --poll-interval 10
 ```
 
 Each JSON file is processed into its own subfolder under `out/` (e.g., `out/emails_candidate/`).
 
 If you want to run without Weaviate indexing:
 ```bash
-python ingestion_service/ingest.py --input /path/to/emails.json --outdir out --no-weaviate
+uv run email-classifier-ingest --input /path/to/emails.json --outdir out --no-weaviate
 ```
 
 ## Run Weaviate (Optional)
@@ -76,7 +76,7 @@ docker compose up -d
 
 ## Run Q&A API
 ```bash
-uvicorn chat_service.api:app --host 0.0.0.0 --port 8000
+uv run email-classifier-api
 ```
 
 Example:
@@ -89,7 +89,7 @@ curl -X POST http://localhost:8000/ask \
 ## Run Streamlit UI
 Start the API (above), then run:
 ```bash
-streamlit run ui/streamlit_app.py
+uv run streamlit run ui/streamlit_app.py
 ```
 
 Optional: point the UI at a different API URL:
@@ -101,3 +101,19 @@ export AGENT_API_URL=http://localhost:8000
 - Classification and reasoning are handled by an LLM and validated against a strict JSON schema.
 - PII redaction runs before sending content to the LLM.
 - If Weaviate is disabled, outputs are still produced for the handler summary and actions.
+
+## Developer Tooling
+Formatting:
+```bash
+uv run black .
+```
+
+Linting:
+```bash
+uv run ruff check .
+```
+
+Type checking:
+```bash
+uv run mypy .
+```

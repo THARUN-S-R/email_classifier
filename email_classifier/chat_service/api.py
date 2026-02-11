@@ -1,24 +1,30 @@
 from __future__ import annotations
-import os, sys
+import os
 from pathlib import Path
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.append(str(ROOT))
 
-from chat_service.agent_graph import build_graph
-from langchain_agent.agent import LangChainAgent
-from shared.logging import setup_logging
-from shared.config import warn_if_missing_llm_keys
+from email_classifier.chat_service.agent_graph import build_graph
+from email_classifier.langchain_agent.agent import LangChainAgent
+from email_classifier.shared.logging import setup_logging, set_request_id
+from email_classifier.shared.config import warn_if_missing_llm_keys
 
 load_dotenv()
 setup_logging()
 warn_if_missing_llm_keys()
 app = FastAPI(title="Email Ops Agent (LangGraph)")
+
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    req_id = request.headers.get("x-request-id") or os.urandom(8).hex()
+    set_request_id(req_id)
+    response = await call_next(request)
+    response.headers["x-request-id"] = req_id
+    return response
 
 agent = build_graph()
 lc_agent = LangChainAgent()
@@ -35,7 +41,7 @@ class AskResponse(BaseModel):
 def ask(req: AskRequest):
     model = os.getenv("LLM_MODEL", "gpt-4o-mini")
     try:
-        question = req.question
+        question = _with_history(req.question, req.history, req.session_id)
         out = agent.invoke({"question": question, "model": model})
         answer = out["answer"]
         if req.session_id:
