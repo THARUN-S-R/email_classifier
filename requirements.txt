@@ -1,0 +1,15 @@
+streamlit==1.38.0
+requests==2.32.3
+litellm==1.44.19
+pydantic==2.8.2
+python-dotenv==1.0.1
+beautifulsoup4==4.12.3
+tqdm==4.66.5
+weaviate-client==4.7.1
+langgraph==0.2.35
+fastapi==0.115.0
+uvicorn==0.30.6
+langchain==0.2.16
+langchain-openai==0.1.25
+langchain-community==0.2.16
+pymongo==4.8.0
