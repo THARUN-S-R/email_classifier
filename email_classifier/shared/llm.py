@@ -1,27 +1,36 @@
 from __future__ import annotations
-import json, re, time, logging
-from typing import Any, Dict, Type, Optional
-from pydantic import BaseModel
+
+import json
+import logging
+import re
+import time
+from typing import Any
+
 from litellm import completion, embedding
+from pydantic import BaseModel
 
 logger = logging.getLogger("email_classifier.llm")
+
 
 def call_llm(
     model: str,
     system: str,
     user: str,
     temperature: float = 0.1,
-    max_tokens: Optional[int] = None,
+    max_tokens: int | None = None,
     timeout: int = 60,
     max_retries: int = 2,
     retry_backoff: float = 1.5,
 ) -> str:
-    last_err: Optional[Exception] = None
+    last_err: Exception | None = None
     for attempt in range(max_retries + 1):
         try:
             kwargs = {
                 "model": model,
-                "messages": [{"role":"system","content":system},{"role":"user","content":user}],
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
                 "temperature": temperature,
                 "timeout": timeout,
             }
@@ -32,13 +41,19 @@ def call_llm(
         except Exception as e:
             last_err = e
             if attempt < max_retries:
-                sleep_s = retry_backoff ** attempt
-                logger.warning("LLM call failed (attempt %s/%s): %s. Retrying in %.2fs",
-                               attempt + 1, max_retries + 1, e, sleep_s)
+                sleep_s = retry_backoff**attempt
+                logger.warning(
+                    "LLM call failed (attempt %s/%s): %s. Retrying in %.2fs",
+                    attempt + 1,
+                    max_retries + 1,
+                    e,
+                    sleep_s,
+                )
                 time.sleep(sleep_s)
             else:
                 logger.error("LLM call failed after %s attempts: %s", max_retries + 1, e)
     raise last_err  # type: ignore[misc]
+
 
 def _strip_code_fences(text: str) -> str:
     t = text.strip()
@@ -48,42 +63,47 @@ def _strip_code_fences(text: str) -> str:
             t = t.split("\n", 1)[1].strip()
     return t
 
+
 def _fix_common_json_issues(s: str) -> str:
     # Remove trailing commas before object/array close
     s = re.sub(r",\s*([}\]])", r"\1", s)
     return s
 
-def parse_json_object(text: str) -> Dict[str, Any]:
+
+def parse_json_object(text: str) -> dict[str, Any]:
     t = _strip_code_fences(text)
     s = t.find("{")
     e = t.rfind("}")
     if s == -1 or e == -1 or e <= s:
         raise ValueError("No JSON object found in LLM output.")
-    candidate = t[s:e+1]
+    candidate = t[s : e + 1]
     try:
         return json.loads(candidate)
     except json.JSONDecodeError:
         candidate = _fix_common_json_issues(candidate)
         return json.loads(candidate)
 
-def schema_str(model: Type[BaseModel]) -> str:
+
+def schema_str(model: type[BaseModel]) -> str:
     return json.dumps(model.model_json_schema(), indent=2)
+
 
 def embed_text(model: str, text: str) -> list[float]:
     resp = embedding(model=model, input=[text])
     return resp["data"][0]["embedding"]
 
+
 def call_llm_json(
     model: str,
     system: str,
     user: str,
-    schema: Optional[str] = None,
+    schema: str | None = None,
     temperature: float = 0.1,
-    max_tokens: Optional[int] = None,
+    max_tokens: int | None = None,
     timeout: int = 60,
     max_attempts: int = 3,
-) -> Dict[str, Any]:
-    last_err: Optional[Exception] = None
+) -> dict[str, Any]:
+    last_err: Exception | None = None
     prompt = user
     for attempt in range(max_attempts):
         raw = call_llm(
@@ -110,16 +130,19 @@ def call_llm_json(
                 + "\nFix this output into valid JSON only:\n"
                 + raw_trim
             )
-            logger.warning("Invalid JSON from LLM (attempt %s/%s): %s", attempt + 1, max_attempts, e)
+            logger.warning(
+                "Invalid JSON from LLM (attempt %s/%s): %s", attempt + 1, max_attempts, e
+            )
     raise last_err  # type: ignore[misc]
+
 
 def call_llm_json_model(
     model: str,
     system: str,
     user: str,
-    model_cls: Type[BaseModel],
+    model_cls: type[BaseModel],
     temperature: float = 0.1,
-    max_tokens: Optional[int] = None,
+    max_tokens: int | None = None,
     timeout: int = 60,
     max_attempts: int = 3,
 ) -> BaseModel:

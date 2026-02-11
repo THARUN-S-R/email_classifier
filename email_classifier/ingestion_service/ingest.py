@@ -1,35 +1,59 @@
 from __future__ import annotations
 
-import argparse, os, json, logging, hashlib, uuid
-from pathlib import Path
-from typing import List
+import argparse
+import hashlib
+import logging
+import os
+import uuid
+
 from dotenv import load_dotenv
 from tqdm import tqdm
-
-ROOT = Path(__file__).resolve().parents[1]
-
-from email_classifier.shared.models import EmailThread, ThreadTriage
-from email_classifier.shared.utils import (
-    ensure_dir, load_json, write_text, write_json, append_jsonl,
-    extract_claim_ref, CLAIM_REF_RE, sender_domain, redact_for_llm, redact_for_index, raw_store,
-    extract_signature_name, extract_salutation_name, name_from_email,
-    parse_datetime
-)
-from email_classifier.shared.llm import call_llm_json_model, schema_str
-from email_classifier.shared.prompts import THREAD_TRIAGE_SYSTEM, THREAD_TRIAGE_USER, FEW_SHOT_EXAMPLES
-from email_classifier.ingestion_service.parsing import parse_threads
-from email_classifier.ingestion_service.summarizer import render_summary_md, render_user_day_summary_md
-from email_classifier.shared.logging import setup_logging
-from email_classifier.shared.config import warn_if_missing_llm_keys, CONFIDENCE_MIN, MAX_LLM_THREAD_CHARS
 from weaviate.collections.classes.data import DataObject
 
-P_RANK = {"P0":0, "P1":1, "P2":2, "P3":3}
+from email_classifier.ingestion_service.parsing import parse_threads
+from email_classifier.ingestion_service.summarizer import (
+    render_summary_md,
+    render_user_day_summary_md,
+)
+from email_classifier.shared.config import (
+    CONFIDENCE_MIN,
+    MAX_LLM_THREAD_CHARS,
+    warn_if_missing_llm_keys,
+)
+from email_classifier.shared.llm import call_llm_json_model, schema_str
+from email_classifier.shared.logging import setup_logging
+from email_classifier.shared.models import EmailThread, ThreadTriage
+from email_classifier.shared.prompts import (
+    FEW_SHOT_EXAMPLES,
+    THREAD_TRIAGE_SYSTEM,
+    THREAD_TRIAGE_USER,
+)
+from email_classifier.shared.utils import (
+    CLAIM_REF_RE,
+    append_jsonl,
+    ensure_dir,
+    extract_claim_ref,
+    extract_salutation_name,
+    extract_signature_name,
+    load_json,
+    name_from_email,
+    parse_datetime,
+    redact_for_index,
+    redact_for_llm,
+    sender_domain,
+    write_json,
+    write_text,
+)
+
+P_RANK = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
 logger = logging.getLogger("email_classifier.ingest")
+
 
 def best_priority(triage: ThreadTriage) -> str:
     if not triage.actions:
         return "P3"
     return min((a.priority for a in triage.actions), key=lambda p: P_RANK[p])
+
 
 def stabilize_rules(triage: ThreadTriage, thread_text_lower: str) -> ThreadTriage:
     # Deterministic urgency stabilizer (very simple, interview-friendly)
@@ -39,21 +63,39 @@ def stabilize_rules(triage: ThreadTriage, thread_text_lower: str) -> ThreadTriag
             triage.archive_recommendation = "archive"
         return triage
 
-    urgent_hits = any(k in thread_text_lower for k in ["order today", "asap", "urgent", "deadline", "chasing", "sla", "complaint"])
-    appt_hits = any(k in thread_text_lower for k in ["appointment", "book", "confirm", "wednesday", "thursday", "friday", "monday", "tuesday", "feb", "mar"])
+    urgent_hits = any(
+        k in thread_text_lower
+        for k in ["order today", "asap", "urgent", "deadline", "chasing", "sla", "complaint"]
+    )
+    appt_hits = any(
+        k in thread_text_lower
+        for k in [
+            "appointment",
+            "book",
+            "confirm",
+            "wednesday",
+            "thursday",
+            "friday",
+            "monday",
+            "tuesday",
+            "feb",
+            "mar",
+        ]
+    )
 
     for a in triage.actions:
         if urgent_hits:
-            a.priority = "P0" if a.priority in ["P1","P2","P3"] else a.priority
+            a.priority = "P0" if a.priority in ["P1", "P2", "P3"] else a.priority
             a.blocking = True
             a.due = a.due or "ASAP"
         if appt_hits:
-            if a.priority in ["P2","P3"]:
+            if a.priority in ["P2", "P3"]:
                 a.priority = "P1"
             a.due = a.due or "Within 48h"
     return triage
 
-def extract_participants(thread: EmailThread, handler_domains: List[str]) -> dict:
+
+def extract_participants(thread: EmailThread, handler_domains: list[str]) -> dict:
     handler_name = None
     handler_email = None
     customer_name = None
@@ -89,7 +131,10 @@ def extract_participants(thread: EmailThread, handler_domains: List[str]) -> dic
         "customer_email": customer_email,
     }
 
-def extract_user_email(thread: EmailThread, handler_domains: List[str], default_user: str | None) -> Optional[str]:
+
+def extract_user_email(
+    thread: EmailThread, handler_domains: list[str], default_user: str | None
+) -> str | None:
     if default_user:
         return default_user
     # Prefer an internal recipient (mailbox owner) from sent_to/sent_cc
@@ -106,7 +151,10 @@ def extract_user_email(thread: EmailThread, handler_domains: List[str], default_
             return m.sent_from
     return None
 
-def reconcile_participants(triage: ThreadTriage, participants: dict, handler_domains: List[str]) -> ThreadTriage:
+
+def reconcile_participants(
+    triage: ThreadTriage, participants: dict, handler_domains: list[str]
+) -> ThreadTriage:
     def is_handler_email(addr: str | None) -> bool:
         if not addr:
             return False
@@ -142,6 +190,7 @@ def reconcile_participants(triage: ThreadTriage, participants: dict, handler_dom
 
     return triage
 
+
 def normalize_triage(triage: ThreadTriage, ref_hint: str | None) -> ThreadTriage:
     # Ensure consistency between email_type and action_required
     if triage.email_type != "ACTION_REQUIRED" or not triage.action_required:
@@ -164,7 +213,9 @@ def normalize_triage(triage: ThreadTriage, ref_hint: str | None) -> ThreadTriage
     return triage
 
 
-def format_thread_for_llm(thread: EmailThread, handler_domains: List[str], max_chars: int = MAX_LLM_THREAD_CHARS) -> tuple[str, str, str]:
+def format_thread_for_llm(
+    thread: EmailThread, handler_domains: list[str], max_chars: int = MAX_LLM_THREAD_CHARS
+) -> tuple[str, str, str]:
     # returns (messages_text, thread_ref_hint, latest_message_text)
     thread_ref_hint = None
     msgs_out = []
@@ -173,7 +224,7 @@ def format_thread_for_llm(thread: EmailThread, handler_domains: List[str], max_c
     thread_id = thread.thread_id or ""
     for i, m in enumerate(thread.messages):
         subject = m.subject or ""
-        body = (m.body or "")
+        body = m.body or ""
         body = redact_for_llm(body)  # PII redaction before LLM
         if len(body) > max_chars:
             body = body[:max_chars] + "\n...[truncated]"
@@ -190,22 +241,28 @@ def format_thread_for_llm(thread: EmailThread, handler_domains: List[str], max_c
 
     if thread.messages:
         lm = thread.messages[-1]
-        latest_msg = f"FROM: {lm.sent_from}\nSUBJECT: {lm.subject}\nBODY:\n{redact_for_llm(lm.body or '')}"
+        latest_msg = (
+            f"FROM: {lm.sent_from}\nSUBJECT: {lm.subject}\nBODY:\n{redact_for_llm(lm.body or '')}"
+        )
 
     return "\n---\n".join(msgs_out), (thread_ref_hint or ""), (latest_msg or "")
+
 
 def build_thread_full_text(thread: EmailThread) -> str:
     parts = []
     for i, m in enumerate(thread.messages):
         parts.append(
-            "\n".join([
-                f"[{i}] FROM: {m.sent_from or ''}",
-                f"SUBJECT: {m.subject or ''}",
-                f"SENT_AT: {m.sent_at or ''}",
-                f"BODY:\n{redact_for_index(m.body or '')}",
-            ])
+            "\n".join(
+                [
+                    f"[{i}] FROM: {m.sent_from or ''}",
+                    f"SUBJECT: {m.subject or ''}",
+                    f"SENT_AT: {m.sent_at or ''}",
+                    f"BODY:\n{redact_for_index(m.body or '')}",
+                ]
+            )
         )
     return "\n---\n".join(parts)
+
 
 def build_message_bodies_text(thread: EmailThread) -> str:
     bodies = []
@@ -214,6 +271,7 @@ def build_message_bodies_text(thread: EmailThread) -> str:
         if body:
             bodies.append(body)
     return "\n\n".join(bodies)
+
 
 def stable_thread_key(thread: EmailThread) -> str:
     if thread.thread_id:
@@ -224,15 +282,21 @@ def stable_thread_key(thread: EmailThread) -> str:
     else:
         parts = []
         for i, m in enumerate(thread.messages):
-            parts.append(f"{i}|{m.sent_from or ''}|{m.subject or ''}|{m.sent_at or ''}|{(m.body or '')[:200]}")
+            parts.append(
+                f"{i}|{m.sent_from or ''}|{m.subject or ''}|{m.sent_at or ''}|{(m.body or '')[:200]}"
+            )
         base = "|".join(parts)
     return hashlib.sha256(base.encode("utf-8")).hexdigest()
+
 
 def stable_uuid(thread_key: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"email_classifier:{thread_key}"))
 
-def build_participants_text(triage: ThreadTriage, participants: dict, user_email: Optional[str]) -> str:
-    def _keep(v: Optional[str]) -> Optional[str]:
+
+def build_participants_text(
+    triage: ThreadTriage, participants: dict, user_email: str | None
+) -> str:
+    def _keep(v: str | None) -> str | None:
         if not v:
             return None
         return None if "@" in v else v
@@ -246,6 +310,7 @@ def build_participants_text(triage: ThreadTriage, participants: dict, user_email
     ]
     return " | ".join([v for v in vals if v])
 
+
 def upsert_by_uuid(col, uuid_str: str, properties: dict) -> None:
     try:
         col.data.insert(uuid=uuid_str, properties=properties)
@@ -255,7 +320,8 @@ def upsert_by_uuid(col, uuid_str: str, properties: dict) -> None:
         else:
             raise
 
-def batch_upsert_many(col, rows: List[tuple[str, dict]], chunk_size: int = 100) -> None:
+
+def batch_upsert_many(col, rows: list[tuple[str, dict]], chunk_size: int = 100) -> None:
     if not rows:
         return
     for i in range(0, len(rows), chunk_size):
@@ -284,23 +350,29 @@ def batch_upsert_many(col, rows: List[tuple[str, dict]], chunk_size: int = 100) 
             else:
                 logger.error("batch insert row failed uuid=%s: %s", uid, err.message)
 
+
 def main():
     load_dotenv()
     setup_logging()
-    parser = argparse.ArgumentParser(description="Ingest + triage emails.json -> Weaviate + summary outputs")
+    parser = argparse.ArgumentParser(
+        description="Ingest + triage emails.json -> Weaviate + summary outputs"
+    )
     parser.add_argument("--input", required=True, help="Path to email JSON")
-    parser.add_argument("--outdir", default=os.getenv("OUT_DIR","out"))
+    parser.add_argument("--outdir", default=os.getenv("OUT_DIR", "out"))
     parser.add_argument("--no-weaviate", action="store_true", help="Skip vector DB indexing")
     args = parser.parse_args()
 
     warn_if_missing_llm_keys()
-    model = os.getenv("LLM_MODEL","gpt-4o-mini")
-    handler_domains = [d.strip().lower() for d in os.getenv("HANDLER_DOMAINS","").split(",") if d.strip()]
+    model = os.getenv("LLM_MODEL", "gpt-4o-mini")
+    handler_domains = [
+        d.strip().lower() for d in os.getenv("HANDLER_DOMAINS", "").split(",") if d.strip()
+    ]
 
     ensure_dir(args.outdir)
     if not args.no_weaviate:
-        from email_classifier.weaviate_service.weaviate_service import ensure_schema, THREAD_CLASS
         from email_classifier.weaviate_service.weaviate_client import get_client
+        from email_classifier.weaviate_service.weaviate_service import THREAD_CLASS, ensure_schema
+
         ensure_schema()
 
     try:
@@ -315,8 +387,12 @@ def main():
     summary_col = None
     if not args.no_weaviate:
         try:
-            from email_classifier.weaviate_service.weaviate_service import THREAD_CLASS, DAILY_SUMMARY_CLASS
             from email_classifier.weaviate_service.weaviate_client import get_client
+            from email_classifier.weaviate_service.weaviate_service import (
+                DAILY_SUMMARY_CLASS,
+                THREAD_CLASS,
+            )
+
             client = get_client()
             client.connect()
             threads_col = client.collections.get(THREAD_CLASS)
@@ -328,13 +404,13 @@ def main():
     if os.path.exists(actions_log):
         os.remove(actions_log)
 
-    triages: List[ThreadTriage] = []
+    triages: list[ThreadTriage] = []
 
     default_user = os.getenv("MAILBOX_EMAIL") or None
-    triage_index: List[dict] = []
-    thread_rows: List[tuple[str, dict]] = []
+    triage_index: list[dict] = []
+    thread_rows: list[tuple[str, dict]] = []
     batch_size = int(os.getenv("INGEST_BATCH_SIZE", "100"))
-    for idx, thread in enumerate(tqdm(threads, desc="Triaging threads")):
+    for _idx, thread in enumerate(tqdm(threads, desc="Triaging threads")):
         try:
             messages_text, ref_hint, latest_msg = format_thread_for_llm(thread, handler_domains)
             participants = extract_participants(thread, handler_domains)
@@ -342,13 +418,11 @@ def main():
             dts = [parse_datetime(m.sent_at) for m in thread.messages]
             dts = [d for d in dts if d is not None]
             latest_dt = max(dts) if dts else None
-            earliest_dt = min(dts) if dts else None
-
             user_prompt = THREAD_TRIAGE_USER.format(
                 schema=schema_str(ThreadTriage),
                 handler_domains=handler_domains,
                 few_shot_examples=FEW_SHOT_EXAMPLES,
-                messages=messages_text
+                messages=messages_text,
             )
 
             raw_out = call_llm_json_model(
@@ -385,51 +459,70 @@ def main():
             thread_uuid = stable_uuid(thread_key)
             if threads_col is not None:
                 participants_text = build_participants_text(triage, participants, user_email)
-                thread_rows.append((thread_uuid, {
-                    "thread_id": thread.thread_id or "",
-                    "thread_key": thread_key or "",
-                    "thread_ref": triage.thread_ref or "",
-                    "user_email_lc": (user_email or "").lower(),
-                    "email_type": triage.email_type,
-                    "action_required": triage.action_required,
-                    "priority_best": best_priority(triage),
-                    "topic": triage.topic or "",
-                    "full_text": build_thread_full_text(thread),
-                    "category": triage.category or "",
-                    "actions_text": " | ".join([a.action_item for a in triage.actions if a.action_item]),
-                    "counterparty": (triage.entities.get("counterparty") if isinstance(triage.entities, dict) else "") or "",
-                    "thread_summary": triage.rationale or "",
-                    "latest_message": latest_msg,
-                    "participants_text": participants_text,
-                    "latest_sent_at": latest_dt.isoformat() if latest_dt else "",
-                    "urgency_reason": triage.urgency_reason or "",
-                }))
-            triage_index.append({
-                "triage": triage,
-                "user_email": user_email,
-                "latest_dt": latest_dt,
-            })
+                thread_rows.append(
+                    (
+                        thread_uuid,
+                        {
+                            "thread_id": thread.thread_id or "",
+                            "thread_key": thread_key or "",
+                            "thread_ref": triage.thread_ref or "",
+                            "user_email_lc": (user_email or "").lower(),
+                            "email_type": triage.email_type,
+                            "action_required": triage.action_required,
+                            "priority_best": best_priority(triage),
+                            "topic": triage.topic or "",
+                            "full_text": build_thread_full_text(thread),
+                            "category": triage.category or "",
+                            "actions_text": " | ".join(
+                                [a.action_item for a in triage.actions if a.action_item]
+                            ),
+                            "counterparty": (
+                                triage.entities.get("counterparty")
+                                if isinstance(triage.entities, dict)
+                                else ""
+                            )
+                            or "",
+                            "thread_summary": triage.rationale or "",
+                            "latest_message": latest_msg,
+                            "participants_text": participants_text,
+                            "latest_sent_at": latest_dt.isoformat() if latest_dt else "",
+                            "urgency_reason": triage.urgency_reason or "",
+                        },
+                    )
+                )
+            triage_index.append(
+                {
+                    "triage": triage,
+                    "user_email": user_email,
+                    "latest_dt": latest_dt,
+                }
+            )
 
-            append_jsonl(actions_log, {
-                "thread_id": thread.thread_id,
-                "thread_ref": triage.thread_ref,
-                "email_type": triage.email_type,
-                "topic": triage.topic,
-                "action_required": triage.action_required,
-                "actions": [a.model_dump() for a in triage.actions],
-                "archive_recommendation": triage.archive_recommendation,
-                "urgency_reason": triage.urgency_reason,
-                "missing_info": triage.missing_info,
-                "confidence": triage.confidence,
-                "rationale": triage.rationale,
-                "entities": triage.entities,
-                "handler_name": triage.handler_name,
-                "handler_email": triage.handler_email,
-                "customer_name": triage.customer_name,
-                "customer_email": triage.customer_email,
-            })
+            append_jsonl(
+                actions_log,
+                {
+                    "thread_id": thread.thread_id,
+                    "thread_ref": triage.thread_ref,
+                    "email_type": triage.email_type,
+                    "topic": triage.topic,
+                    "action_required": triage.action_required,
+                    "actions": [a.model_dump() for a in triage.actions],
+                    "archive_recommendation": triage.archive_recommendation,
+                    "urgency_reason": triage.urgency_reason,
+                    "missing_info": triage.missing_info,
+                    "confidence": triage.confidence,
+                    "rationale": triage.rationale,
+                    "entities": triage.entities,
+                    "handler_name": triage.handler_name,
+                    "handler_email": triage.handler_email,
+                    "customer_name": triage.customer_name,
+                    "customer_email": triage.customer_email,
+                },
+            )
         except Exception as e:
-            logger.exception("Failed processing thread_id=%s: %s", getattr(thread, "thread_id", None), e)
+            logger.exception(
+                "Failed processing thread_id=%s: %s", getattr(thread, "thread_id", None), e
+            )
             continue
 
     if threads_col is not None:
@@ -446,7 +539,8 @@ def main():
     # User/day summaries (stored in Weaviate for retrieval)
     if summary_col is not None and triage_index:
         from datetime import datetime
-        grouped: dict[tuple[str, str], List[ThreadTriage]] = {}
+
+        grouped: dict[tuple[str, str], list[ThreadTriage]] = {}
         for row in triage_index:
             triage = row["triage"]
             user_email = row["user_email"] or ""
@@ -456,29 +550,42 @@ def main():
             grouped.setdefault(key, []).append(triage)
 
         created_at = datetime.now().isoformat()
-        summary_rows: List[tuple[str, dict]] = []
+        summary_rows: list[tuple[str, dict]] = []
         for (user_email, day), group in grouped.items():
             md = render_user_day_summary_md(group, user_email or "(unknown)", day)
-            actionable = [t for t in group if t.email_type=="ACTION_REQUIRED" and t.action_required]
-            info = [t for t in group if t.email_type=="INFORMATIONAL_ARCHIVE"]
-            irr = [t for t in group if t.email_type=="IRRELEVANT"]
+            actionable = [
+                t for t in group if t.email_type == "ACTION_REQUIRED" and t.action_required
+            ]
+            info = [t for t in group if t.email_type == "INFORMATIONAL_ARCHIVE"]
+            irr = [t for t in group if t.email_type == "IRRELEVANT"]
             summary_key = f"{(user_email or '').lower()}|{day}"
-            summary_uuid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"email_classifier:summary:{summary_key}"))
-            summary_rows.append((summary_uuid, {
-                "day": day,
-                "user_email": user_email or "",
-                "user_email_lc": (user_email or "").lower(),
-                "summary_md": md,
-                "total_threads": len(group),
-                "action_required": len(actionable),
-                "informational": len(info),
-                "irrelevant": len(irr),
-                "created_at": created_at,
-            }))
+            summary_uuid = str(
+                uuid.uuid5(uuid.NAMESPACE_URL, f"email_classifier:summary:{summary_key}")
+            )
+            summary_rows.append(
+                (
+                    summary_uuid,
+                    {
+                        "day": day,
+                        "user_email": user_email or "",
+                        "user_email_lc": (user_email or "").lower(),
+                        "summary_md": md,
+                        "total_threads": len(group),
+                        "action_required": len(actionable),
+                        "informational": len(info),
+                        "irrelevant": len(irr),
+                        "created_at": created_at,
+                    },
+                )
+            )
         batch_upsert_many(summary_col, summary_rows, chunk_size=batch_size)
 
     if client:
         client.close()
-    print(f"\nDone.\n- {out_summary}\n- {actions_log}\n- {out_threads}\nWeaviate populated at {os.getenv('WEAVIATE_URL')}")
+    print(
+        f"\nDone.\n- {out_summary}\n- {actions_log}\n- {out_threads}\nWeaviate populated at {os.getenv('WEAVIATE_URL')}"
+    )
+
+
 if __name__ == "__main__":
     main()

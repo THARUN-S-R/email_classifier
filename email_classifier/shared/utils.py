@@ -1,36 +1,51 @@
 from __future__ import annotations
-import json, os, re
-from typing import Any, Optional, Dict
-from datetime import datetime, timezone
+
+import json
+import os
+import re
+from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
+from typing import Any
+
 from bs4 import BeautifulSoup
 
 CLAIM_REF_RE = re.compile(r"\bPIN-[A-Z]{3}-\d{5,}\b", re.IGNORECASE)
 
 EMAIL_RE = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE)
 PHONE_RE = re.compile(r"\b(?:\+?\d{1,3}[\s-]?)?(?:\(?\d{3,5}\)?[\s-]?)?\d{3,4}[\s-]?\d{3,4}\b")
-SIGNOFF_RE = re.compile(r"^(regards|kind regards|thanks|thank you|best|sincerely|cheers|many thanks)[,!.]*$", re.IGNORECASE)
+SIGNOFF_RE = re.compile(
+    r"^(regards|kind regards|thanks|thank you|best|sincerely|cheers|many thanks)[,!.]*$",
+    re.IGNORECASE,
+)
 NAME_RE = re.compile(r"^[A-Z][a-z]+(?:\\s+[A-Z][a-z]+){1,3}$")
-SALUTATION_RE = re.compile(r"^(dear|hi|hello)\\s+(mr|mrs|ms|dr)?\\s*([A-Z][a-z]+(?:\\s+[A-Z][a-z]+)?)", re.IGNORECASE)
+SALUTATION_RE = re.compile(
+    r"^(dear|hi|hello)\\s+(mr|mrs|ms|dr)?\\s*([A-Z][a-z]+(?:\\s+[A-Z][a-z]+)?)", re.IGNORECASE
+)
+
 
 def ensure_dir(path: str) -> None:
     os.makedirs(path, exist_ok=True)
 
+
 def load_json(path: str) -> Any:
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
+
 
 def write_text(path: str, text: str) -> None:
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
 
+
 def write_json(path: str, obj: Any) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(obj, f, indent=2, ensure_ascii=False)
 
-def append_jsonl(path: str, obj: Dict[str, Any]) -> None:
+
+def append_jsonl(path: str, obj: dict[str, Any]) -> None:
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(obj, ensure_ascii=False) + "\n")
+
 
 def strip_html(text: str) -> str:
     if not text:
@@ -40,16 +55,19 @@ def strip_html(text: str) -> str:
         return soup.get_text("\n").strip()
     return text.strip()
 
-def extract_claim_ref(subject: Optional[str], body: Optional[str]) -> Optional[str]:
+
+def extract_claim_ref(subject: str | None, body: str | None) -> str | None:
     for t in (subject or "", body or ""):
         m = CLAIM_REF_RE.search(t)
         if m:
             return m.group(0).upper()
     return None
 
-def sender_domain(sender: Optional[str]) -> str:
+
+def sender_domain(sender: str | None) -> str:
     s = (sender or "").strip().lower()
     return s.split("@", 1)[1] if "@" in s else ""
+
 
 def redact_pii(text: str) -> str:
     if not text:
@@ -58,19 +76,23 @@ def redact_pii(text: str) -> str:
     t = PHONE_RE.sub("[REDACTED_PHONE]", t)
     return t
 
+
 def redact_for_llm(text: str) -> str:
     return redact_pii(text)
+
 
 def redact_for_index(text: str) -> str:
     return redact_pii(text)
 
+
 def raw_store(text: str) -> str:
     return text or ""
 
-def extract_signature_name(text: str) -> Optional[str]:
+
+def extract_signature_name(text: str) -> str | None:
     if not text:
         return None
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
     tail = lines[-10:]
     for line in reversed(tail):
         if SIGNOFF_RE.match(line):
@@ -81,7 +103,8 @@ def extract_signature_name(text: str) -> Optional[str]:
             return line
     return None
 
-def extract_salutation_name(text: str) -> Optional[str]:
+
+def extract_salutation_name(text: str) -> str | None:
     if not text:
         return None
     for line in text.splitlines()[:3]:
@@ -90,7 +113,8 @@ def extract_salutation_name(text: str) -> Optional[str]:
             return m.group(3).strip()
     return None
 
-def name_from_email(addr: Optional[str]) -> Optional[str]:
+
+def name_from_email(addr: str | None) -> str | None:
     if not addr or "@" not in addr:
         return None
     local = addr.split("@", 1)[0].replace(".", " ").replace("_", " ").strip()
@@ -99,7 +123,8 @@ def name_from_email(addr: Optional[str]) -> Optional[str]:
         return " ".join(p.capitalize() for p in parts[:3])
     return None
 
-def parse_datetime(value: Optional[str]) -> Optional[datetime]:
+
+def parse_datetime(value: str | None) -> datetime | None:
     if not value:
         return None
     s = str(value).strip()
@@ -111,16 +136,16 @@ def parse_datetime(value: Optional[str]) -> Optional[datetime]:
     try:
         dt = datetime.fromisoformat(s)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
+        return dt.astimezone(UTC)
     except ValueError:
         pass
     # RFC2822 / email date formats
     try:
         dt = parsedate_to_datetime(s)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
+        return dt.astimezone(UTC)
     except Exception:
         pass
     # Common date/time formats
@@ -139,7 +164,7 @@ def parse_datetime(value: Optional[str]) -> Optional[datetime]:
     ]
     for fmt in fmts:
         try:
-            dt = datetime.strptime(s, fmt).replace(tzinfo=timezone.utc)
+            dt = datetime.strptime(s, fmt).replace(tzinfo=UTC)
             return dt
         except ValueError:
             continue

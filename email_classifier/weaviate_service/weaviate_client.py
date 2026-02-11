@@ -1,12 +1,15 @@
 from __future__ import annotations
-import os
-import logging
-from urllib.parse import urlparse
-import weaviate
+
 import atexit
+import logging
+import os
+from urllib.parse import urlparse
+
+import weaviate
 
 _CLIENT: weaviate.WeaviateClient | None = None
 logger = logging.getLogger("email_classifier.weaviate_client")
+
 
 def _env_int(name: str, default: int) -> int:
     v = os.getenv(name)
@@ -17,6 +20,7 @@ def _env_int(name: str, default: int) -> int:
     except ValueError:
         return default
 
+
 def _connect_custom() -> weaviate.WeaviateClient:
     try:
         url = os.getenv("WEAVIATE_URL", "http://localhost:8080")
@@ -24,7 +28,9 @@ def _connect_custom() -> weaviate.WeaviateClient:
 
         http_host = os.getenv("WEAVIATE_HTTP_HOST", parsed.hostname or "localhost")
         http_port = _env_int("WEAVIATE_HTTP_PORT", parsed.port or 8080)
-        http_secure = os.getenv("WEAVIATE_HTTP_SECURE", "false").lower() == "true" or parsed.scheme == "https"
+        http_secure = (
+            os.getenv("WEAVIATE_HTTP_SECURE", "false").lower() == "true" or parsed.scheme == "https"
+        )
 
         grpc_host = os.getenv("WEAVIATE_GRPC_HOST", http_host)
         grpc_port = _env_int("WEAVIATE_GRPC_PORT", 50051)

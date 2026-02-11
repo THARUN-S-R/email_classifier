@@ -1,15 +1,15 @@
 from __future__ import annotations
+
+import atexit
 import os
-from typing import List
 from datetime import datetime
 
-from pymongo import MongoClient
-import atexit
 from langchain_core.chat_history import BaseChatMessageHistory
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
-
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from pymongo import MongoClient
 
 _CLIENT: MongoClient | None = None
+
 
 def _get_client(uri: str) -> MongoClient:
     global _CLIENT
@@ -17,6 +17,7 @@ def _get_client(uri: str) -> MongoClient:
         _CLIENT = MongoClient(uri)
         atexit.register(_CLIENT.close)
     return _CLIENT
+
 
 class MongoChatHistory(BaseChatMessageHistory):
     """Stores a full chat as a single MongoDB document per session_id."""
@@ -30,10 +31,10 @@ class MongoChatHistory(BaseChatMessageHistory):
         self._col = self._client[self.mongo_db][self.mongo_coll]
 
     @property
-    def messages(self) -> List[BaseMessage]:
+    def messages(self) -> list[BaseMessage]:
         doc = self._col.find_one({"session_id": self.session_id}) or {}
         msgs = doc.get("messages", [])
-        out: List[BaseMessage] = []
+        out: list[BaseMessage] = []
         for m in msgs:
             role = m.get("role")
             content = m.get("content", "")
@@ -68,7 +69,7 @@ class MongoChatHistory(BaseChatMessageHistory):
             upsert=True,
         )
 
-    def add_messages(self, messages: List[BaseMessage]) -> None:
+    def add_messages(self, messages: list[BaseMessage]) -> None:
         for m in messages:
             self.add_message(m)
 
