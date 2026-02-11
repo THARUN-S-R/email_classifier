@@ -105,10 +105,7 @@ uv run email-classifier-ingest --input /path/to/inbox --outdir out --watch --pol
 
 Each JSON file is processed into its own subfolder under `out/` (e.g., `out/emails_candidate/`).
 
-If you want to run without Weaviate indexing:
-```bash
-uv run email-classifier-ingest --input /path/to/emails.json --outdir out --no-weaviate
-```
+
 
 ## Run Weaviate (Optional)
 ```bash
