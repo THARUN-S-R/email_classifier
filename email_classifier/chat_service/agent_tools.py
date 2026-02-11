@@ -1,13 +1,16 @@
 from __future__ import annotations
-import logging
+
 import json
-import re
+import logging
 import os
-from typing import Any, Dict, List, Optional
-from email_classifier.weaviate_service.weaviate_client import get_fresh_client
-from email_classifier.weaviate_service.weaviate_service import THREAD_CLASS, DAILY_SUMMARY_CLASS
-from email_classifier.shared.config import THREAD_FETCH_LIMIT, SUMMARY_FETCH_LIMIT
+import re
+from typing import Any
+
 from weaviate.classes.query import Filter, Rerank
+
+from email_classifier.shared.config import SUMMARY_FETCH_LIMIT, THREAD_FETCH_LIMIT
+from email_classifier.weaviate_service.weaviate_client import get_fresh_client
+from email_classifier.weaviate_service.weaviate_service import DAILY_SUMMARY_CLASS, THREAD_CLASS
 
 logger = logging.getLogger("email_classifier.agent_tools")
 
@@ -30,13 +33,13 @@ def _clean_query(query: str) -> str:
     kept = [t for t in tokens if t not in _STOPWORDS_FALLBACK and len(t) > 1]
     return " ".join(kept) if kept else query
 
-def get_collection_properties() -> Dict[str, List[Dict[str, Any]]]:
+def get_collection_properties() -> dict[str, list[dict[str, Any]]]:
     client = get_fresh_client()
     try:
         client.connect()
-        out: Dict[str, List[Dict[str, Any]]] = {}
+        out: dict[str, list[dict[str, Any]]] = {}
         for cname in (THREAD_CLASS, DAILY_SUMMARY_CLASS):
-            props: List[Dict[str, Any]] = []
+            props: list[dict[str, Any]] = []
             try:
                 col = client.collections.get(cname)
                 cfg = col.config.get()
@@ -63,7 +66,7 @@ def _get_collection_safe(client, collection_name: str):
 def _rerank_enabled() -> bool:
     return os.getenv("WEAVIATE_RERANK_ENABLED", "true").lower() in {"1", "true", "yes"}
 
-_RERANK_AVAILABLE: Optional[bool] = None
+_RERANK_AVAILABLE: bool | None = None
 
 
 def _run_with_optional_rerank(search_fn, *, query_text: str, rerank_prop: str, **kwargs):
@@ -103,14 +106,14 @@ SUMMARY_PROPS = {
 def _best_rank(priority: str) -> int:
     return PRIORITY_ORDER.get(priority or "P3", 3)
 
-def _filter_from_spec(spec: Optional[Dict[str, Any]], allowed_props: Optional[set[str]] = None) -> Optional[Filter]:
+def _filter_from_spec(spec: dict[str, Any] | None, allowed_props: set[str] | None = None) -> Filter | None:
     if not spec:
         return None
     # LLM-friendly JSON format:
     # {"op":"and|or","conditions":[...],"groups":[...]}
     if "op" in spec or "conditions" in spec or "groups" in spec:
         op = str(spec.get("op", "and")).lower()
-        built: List[Filter] = []
+        built: list[Filter] = []
         for cond in spec.get("conditions", []) or []:
             if not isinstance(cond, dict):
                 continue
@@ -242,7 +245,7 @@ def _filter_from_spec(spec: Optional[Dict[str, Any]], allowed_props: Optional[se
         fn = getattr(f, "equal", None)
     return fn(value) if fn else None
 
-def search_threads(filter_spec: Optional[Dict[str, Any]], limit: int = THREAD_FETCH_LIMIT) -> List[Dict[str, Any]]:
+def search_threads(filter_spec: dict[str, Any] | None, limit: int = THREAD_FETCH_LIMIT) -> list[dict[str, Any]]:
     """
     Hybrid: deterministic structured filtering + (optionally) later semantic.
     For MVP, we do structured filtering and return the most relevant.
@@ -267,7 +270,7 @@ def search_threads(filter_spec: Optional[Dict[str, Any]], limit: int = THREAD_FE
     finally:
         client.close()
 
-def semantic_search_threads(query: str, limit: int = THREAD_FETCH_LIMIT, filter_spec: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+def semantic_search_threads(query: str, limit: int = THREAD_FETCH_LIMIT, filter_spec: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     query = _clean_query(query)
     client = get_fresh_client()
     try:
@@ -299,7 +302,7 @@ def semantic_search_threads(query: str, limit: int = THREAD_FETCH_LIMIT, filter_
     finally:
         client.close()
 
-def bm25_search_threads(query: str, limit: int = THREAD_FETCH_LIMIT, filter_spec: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+def bm25_search_threads(query: str, limit: int = THREAD_FETCH_LIMIT, filter_spec: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     client = get_fresh_client()
     try:
         client.connect()
@@ -330,7 +333,7 @@ def bm25_search_threads(query: str, limit: int = THREAD_FETCH_LIMIT, filter_spec
     finally:
         client.close()
 
-def hybrid_search_threads(query: str, limit: int = THREAD_FETCH_LIMIT, alpha: float = 0.5, filter_spec: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+def hybrid_search_threads(query: str, limit: int = THREAD_FETCH_LIMIT, alpha: float = 0.5, filter_spec: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     query = _clean_query(query)
     client = get_fresh_client()
     try:
@@ -364,7 +367,7 @@ def hybrid_search_threads(query: str, limit: int = THREAD_FETCH_LIMIT, alpha: fl
     finally:
         client.close()
 
-def get_thread_detail(thread_key: str) -> Optional[Dict[str, Any]]:
+def get_thread_detail(thread_key: str) -> dict[str, Any] | None:
     client = get_fresh_client()
     try:
         client.connect()
@@ -385,19 +388,19 @@ def get_thread_detail(thread_key: str) -> Optional[Dict[str, Any]]:
     finally:
         client.close()
 
-def semantic_search_details(query: str, limit: int = THREAD_FETCH_LIMIT, filter_spec: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+def semantic_search_details(query: str, limit: int = THREAD_FETCH_LIMIT, filter_spec: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     # Compatibility shim: details collection removed, use thread search.
     return semantic_search_threads(query=query, limit=limit, filter_spec=filter_spec)
 
-def bm25_search_details(query: str, limit: int = THREAD_FETCH_LIMIT, filter_spec: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+def bm25_search_details(query: str, limit: int = THREAD_FETCH_LIMIT, filter_spec: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     # Compatibility shim: details collection removed, use thread search.
     return bm25_search_threads(query=query, limit=limit, filter_spec=filter_spec)
 
-def hybrid_search_details(query: str, limit: int = THREAD_FETCH_LIMIT, alpha: float = 0.5, filter_spec: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+def hybrid_search_details(query: str, limit: int = THREAD_FETCH_LIMIT, alpha: float = 0.5, filter_spec: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     # Compatibility shim: details collection removed, use thread search.
     return hybrid_search_threads(query=query, limit=limit, alpha=alpha, filter_spec=filter_spec)
 
-def get_daily_summaries(filter_spec: Optional[Dict[str, Any]], limit: int = SUMMARY_FETCH_LIMIT) -> List[Dict[str, Any]]:
+def get_daily_summaries(filter_spec: dict[str, Any] | None, limit: int = SUMMARY_FETCH_LIMIT) -> list[dict[str, Any]]:
     client = get_fresh_client()
     try:
         client.connect()
@@ -421,7 +424,7 @@ def get_daily_summaries(filter_spec: Optional[Dict[str, Any]], limit: int = SUMM
     finally:
         client.close()
 
-def bm25_search_summaries(query: str, limit: int = 5) -> List[Dict[str, Any]]:
+def bm25_search_summaries(query: str, limit: int = 5) -> list[dict[str, Any]]:
     client = get_fresh_client()
     try:
         client.connect()
@@ -444,7 +447,7 @@ def bm25_search_summaries(query: str, limit: int = 5) -> List[Dict[str, Any]]:
     finally:
         client.close()
 
-def hybrid_search_summaries(query: str, limit: int = 5, alpha: float = 0.5) -> List[Dict[str, Any]]:
+def hybrid_search_summaries(query: str, limit: int = 5, alpha: float = 0.5) -> list[dict[str, Any]]:
     client = get_fresh_client()
     try:
         client.connect()
@@ -465,10 +468,10 @@ def hybrid_search_summaries(query: str, limit: int = 5, alpha: float = 0.5) -> L
         return []
     finally:
         client.close()
-def _filter_summary(filter_spec: Optional[Dict[str, Any]]) -> str:
+def _filter_summary(filter_spec: dict[str, Any] | None) -> str:
     if not filter_spec:
         return "none"
-    def _strip(spec: Dict[str, Any]) -> Dict[str, Any]:
+    def _strip(spec: dict[str, Any]) -> dict[str, Any]:
         out = {k: v for k, v in spec.items() if k in ("path","operator","operands")}
         if "operands" in out and isinstance(out["operands"], list):
             out["operands"] = [_strip(o) for o in out["operands"] if isinstance(o, dict)]

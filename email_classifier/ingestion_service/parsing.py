@@ -1,11 +1,14 @@
 from __future__ import annotations
-from typing import Any, List, Dict
-from datetime import datetime, timezone
-from email_classifier.shared.models import EmailThread, EmailMessage
-from email_classifier.shared.utils import strip_html, parse_datetime
 
-def parse_threads(raw: Any) -> List[EmailThread]:
-    threads_raw: List[Any] = []
+from datetime import UTC, datetime
+from typing import Any
+
+from email_classifier.shared.models import EmailMessage, EmailThread
+from email_classifier.shared.utils import parse_datetime, strip_html
+
+
+def parse_threads(raw: Any) -> list[EmailThread]:
+    threads_raw: list[Any] = []
 
     if isinstance(raw, list):
         threads_raw = raw
@@ -29,11 +32,11 @@ def parse_threads(raw: Any) -> List[EmailThread]:
     else:
         raise ValueError("Input JSON must be list or dict.")
 
-    out: List[EmailThread] = []
+    out: list[EmailThread] = []
     for t in threads_raw:
         if not isinstance(t, dict) or not isinstance(t.get("messages"), list):
             continue
-        msgs: List[EmailMessage] = []
+        msgs: list[EmailMessage] = []
         for m in t["messages"]:
             if not isinstance(m, dict):
                 continue
@@ -59,7 +62,7 @@ def parse_threads(raw: Any) -> List[EmailThread]:
         msgs_with_idx.sort(
             key=lambda im: (
                 im[1] is None,
-                im[1] or datetime.min.replace(tzinfo=timezone.utc),
+                im[1] or datetime.min.replace(tzinfo=UTC),
                 im[0],
             )
         )

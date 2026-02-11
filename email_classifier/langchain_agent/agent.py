@@ -5,7 +5,7 @@ import json
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from langchain.agents import AgentExecutor, create_openai_tools_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -42,8 +42,8 @@ def _is_summary_query(question: str) -> bool:
     return any(k in q for k in ("summary", "summaries", "daily summary", "day summary"))
 
 
-def _dedupe_threads(items: List[Dict[str, Any]], limit: int = 5) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
+def _dedupe_threads(items: list[dict[str, Any]], limit: int = 5) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
     seen = set()
     for t in items:
         key = t.get("thread_key") or t.get("thread_ref")
@@ -56,7 +56,7 @@ def _dedupe_threads(items: List[Dict[str, Any]], limit: int = 5) -> List[Dict[st
     return out
 
 
-def _thread_view(t: Dict[str, Any]) -> Dict[str, Any]:
+def _thread_view(t: dict[str, Any]) -> dict[str, Any]:
     out = {
         "thread_key": t.get("thread_key"),
         "thread_ref": t.get("thread_ref"),
@@ -76,7 +76,7 @@ def _thread_view(t: Dict[str, Any]) -> Dict[str, Any]:
     return out
 
 
-def _build_plan_sync(question: str) -> Dict[str, Any]:
+def _build_plan_sync(question: str) -> dict[str, Any]:
     t0 = time.perf_counter()
     model = os.getenv("LLM_MODEL", "gpt-4o-mini")
     props = get_collection_properties()
@@ -97,18 +97,18 @@ def _build_plan_sync(question: str) -> Dict[str, Any]:
     return QueryPlan.model_validate(raw).model_dump()
 
 
-async def _build_plan(question: str) -> Dict[str, Any]:
+async def _build_plan(question: str) -> dict[str, Any]:
     return await asyncio.to_thread(_build_plan_sync, question)
 
 
 @tool("build_plan")
-async def tool_build_plan(question: str) -> Dict[str, Any]:
+async def tool_build_plan(question: str) -> dict[str, Any]:
     """Build a compact QueryPlan from the user question."""
     logger.info("tool_build_plan: question_len=%s", len(question or ""))
     return await _build_plan(question)
 
 
-def _refine_plan_sync(question: str, plan: Dict[str, Any]) -> Dict[str, Any]:
+def _refine_plan_sync(question: str, plan: dict[str, Any]) -> dict[str, Any]:
     t0 = time.perf_counter()
     model = os.getenv("LLM_MODEL", "gpt-4o-mini")
     props = get_collection_properties()
@@ -130,11 +130,11 @@ def _refine_plan_sync(question: str, plan: Dict[str, Any]) -> Dict[str, Any]:
     return QueryPlan.model_validate(raw).model_dump()
 
 
-async def _refine_plan(question: str, plan: Dict[str, Any]) -> Dict[str, Any]:
+async def _refine_plan(question: str, plan: dict[str, Any]) -> dict[str, Any]:
     return await asyncio.to_thread(_refine_plan_sync, question, plan)
 
 
-def _retrieve(question: str, plan: Optional[Any] = None) -> Dict[str, Any]:
+def _retrieve(question: str, plan: Any | None = None) -> dict[str, Any]:
     t0 = time.perf_counter()
     if isinstance(plan, str):
         try:
@@ -180,7 +180,7 @@ def _retrieve(question: str, plan: Optional[Any] = None) -> Dict[str, Any]:
         if k and k not in seen:
             seen.add(k)
             thread_ids.append(k)
-    summaries: List[Dict[str, Any]] = []
+    summaries: list[dict[str, Any]] = []
     q = question.lower()
     if "summary" in q or "summaries" in q:
         s1 = get_daily_summaries(plan_obj.summary_filter, 5)
@@ -200,17 +200,17 @@ def _retrieve(question: str, plan: Optional[Any] = None) -> Dict[str, Any]:
 
 
 @tool("retrieve")
-def tool_retrieve(question: str, plan: Optional[Any] = None) -> Dict[str, Any]:
+def tool_retrieve(question: str, plan: Any | None = None) -> dict[str, Any]:
     """Retrieve top thread candidates (with and without filters) from EmailThread."""
     logger.info("tool_retrieve: question_len=%s has_plan=%s", len(question or ""), bool(plan))
     return _retrieve(question, plan)
 
 
-def _sanitize_retrieved(retrieved: Dict[str, Any]) -> Dict[str, Any]:
+def _sanitize_retrieved(retrieved: dict[str, Any]) -> dict[str, Any]:
     src = dict(retrieved or {})
     threads_src = [t for t in (src.get("threads") or []) if isinstance(t, dict)]
     sums_src = [s for s in (src.get("summaries") or []) if isinstance(s, dict)]
-    dedup_summaries: List[Dict[str, Any]] = []
+    dedup_summaries: list[dict[str, Any]] = []
     seen_sum = set()
     for s in sums_src:
         key = (s.get("user_email_lc") or s.get("user_email") or "", s.get("day") or "")
@@ -225,7 +225,7 @@ def _sanitize_retrieved(retrieved: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-async def _final_answer(question: str, retrieved: Optional[Any] = None) -> str:
+async def _final_answer(question: str, retrieved: Any | None = None) -> str:
     t0 = time.perf_counter()
     model = os.getenv("LLM_MODEL", "gpt-4o-mini")
     if isinstance(retrieved, str):
@@ -256,7 +256,7 @@ async def _final_answer(question: str, retrieved: Optional[Any] = None) -> str:
 
 
 @tool("final_answer")
-async def tool_final_answer(question: str, retrieved: Optional[Any] = None) -> str:
+async def tool_final_answer(question: str, retrieved: Any | None = None) -> str:
     """Generate grounded answer from retrieved records."""
     logger.info("tool_final_answer: question_len=%s has_retrieved=%s", len(question or ""), bool(retrieved))
     return await _final_answer(question, retrieved)
@@ -266,7 +266,7 @@ class LangChainAgent:
     def __init__(self, max_steps: int = 3):
         self.max_steps = max_steps
         self.tools = [tool_build_plan, tool_retrieve, tool_final_answer]
-        self._executors: Dict[str, RunnableWithMessageHistory] = {}
+        self._executors: dict[str, RunnableWithMessageHistory] = {}
 
     def _history_factory(self, session_id: str) -> MongoChatHistory:
         return MongoChatHistory(session_id=session_id)
@@ -306,7 +306,7 @@ class LangChainAgent:
         self._executors[model] = runnable
         return runnable
 
-    async def arun(self, question: str, model: str, session_id: Optional[str] = None) -> str:
+    async def arun(self, question: str, model: str, session_id: str | None = None) -> str:
         t0 = time.perf_counter()
         logger.info("run: question_len=%s model=%s session_id=%s", len(question or ""), model, session_id)
         try:
@@ -328,5 +328,5 @@ class LangChainAgent:
             logger.exception("LangChain agent failed: %s", e)
             return f"LangChain agent error: {e}"
 
-    def run(self, question: str, model: str, session_id: Optional[str] = None) -> str:
+    def run(self, question: str, model: str, session_id: str | None = None) -> str:
         return asyncio.run(self.arun(question, model, session_id))

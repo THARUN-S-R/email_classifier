@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import time
 import uuid
-from typing import Any, Dict, List
+from typing import Any
 
 import requests
 import streamlit as st
@@ -42,7 +42,7 @@ if "session_id" not in st.session_state:
 
 tab_chat, tab_summary = st.tabs(["Chat", "Daily Summary"])
 
-def call_agent(question: str) -> Dict[str, Any]:
+def call_agent(question: str) -> dict[str, Any]:
     url = api_url.rstrip("/") + "/ask_langchain" #ask_langchain ask
     payload = {
         "question": question,
@@ -56,7 +56,7 @@ def call_agent(question: str) -> Dict[str, Any]:
 with tab_chat:
     st.subheader("Chat")
 
-    chat_history: List[Dict[str, str]] = st.session_state["chat"]
+    chat_history: list[dict[str, str]] = st.session_state["chat"]
 
     for msg in chat_history:
         with st.chat_message(msg["role"]):
@@ -79,7 +79,7 @@ with tab_summary:
     if not os.path.exists(summary_path):
         st.warning(f"Summary not found at {summary_path}")
     else:
-        with open(summary_path, "r", encoding="utf-8") as f:
+        with open(summary_path, encoding="utf-8") as f:
             st.markdown(f.read())
 
 # Fixed input at page bottom

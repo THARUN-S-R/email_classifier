@@ -1,9 +1,11 @@
 from __future__ import annotations
-import os
-import logging
-from urllib.parse import urlparse
-import weaviate
+
 import atexit
+import logging
+import os
+from urllib.parse import urlparse
+
+import weaviate
 
 _CLIENT: weaviate.WeaviateClient | None = None
 logger = logging.getLogger("email_classifier.weaviate_client")

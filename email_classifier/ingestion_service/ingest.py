@@ -1,27 +1,49 @@
 from __future__ import annotations
 
-import argparse, os, json, logging, hashlib, uuid
-from pathlib import Path
-from typing import List
+import argparse
+import hashlib
+import logging
+import os
+import uuid
+
 from dotenv import load_dotenv
 from tqdm import tqdm
+from weaviate.collections.classes.data import DataObject
 
-ROOT = Path(__file__).resolve().parents[1]
-
-from email_classifier.shared.models import EmailThread, ThreadTriage
-from email_classifier.shared.utils import (
-    ensure_dir, load_json, write_text, write_json, append_jsonl,
-    extract_claim_ref, CLAIM_REF_RE, sender_domain, redact_for_llm, redact_for_index, raw_store,
-    extract_signature_name, extract_salutation_name, name_from_email,
-    parse_datetime
+from email_classifier.ingestion_service.parsing import parse_threads
+from email_classifier.ingestion_service.summarizer import (
+    render_summary_md,
+    render_user_day_summary_md,
+)
+from email_classifier.shared.config import (
+    CONFIDENCE_MIN,
+    MAX_LLM_THREAD_CHARS,
+    warn_if_missing_llm_keys,
 )
 from email_classifier.shared.llm import call_llm_json_model, schema_str
-from email_classifier.shared.prompts import THREAD_TRIAGE_SYSTEM, THREAD_TRIAGE_USER, FEW_SHOT_EXAMPLES
-from email_classifier.ingestion_service.parsing import parse_threads
-from email_classifier.ingestion_service.summarizer import render_summary_md, render_user_day_summary_md
 from email_classifier.shared.logging import setup_logging
-from email_classifier.shared.config import warn_if_missing_llm_keys, CONFIDENCE_MIN, MAX_LLM_THREAD_CHARS
-from weaviate.collections.classes.data import DataObject
+from email_classifier.shared.models import EmailThread, ThreadTriage
+from email_classifier.shared.prompts import (
+    FEW_SHOT_EXAMPLES,
+    THREAD_TRIAGE_SYSTEM,
+    THREAD_TRIAGE_USER,
+)
+from email_classifier.shared.utils import (
+    CLAIM_REF_RE,
+    append_jsonl,
+    ensure_dir,
+    extract_claim_ref,
+    extract_salutation_name,
+    extract_signature_name,
+    load_json,
+    name_from_email,
+    parse_datetime,
+    redact_for_index,
+    redact_for_llm,
+    sender_domain,
+    write_json,
+    write_text,
+)
 
 P_RANK = {"P0":0, "P1":1, "P2":2, "P3":3}
 logger = logging.getLogger("email_classifier.ingest")
@@ -53,7 +75,7 @@ def stabilize_rules(triage: ThreadTriage, thread_text_lower: str) -> ThreadTriag
             a.due = a.due or "Within 48h"
     return triage
 
-def extract_participants(thread: EmailThread, handler_domains: List[str]) -> dict:
+def extract_participants(thread: EmailThread, handler_domains: list[str]) -> dict:
     handler_name = None
     handler_email = None
     customer_name = None
@@ -89,7 +111,7 @@ def extract_participants(thread: EmailThread, handler_domains: List[str]) -> dic
         "customer_email": customer_email,
     }
 
-def extract_user_email(thread: EmailThread, handler_domains: List[str], default_user: str | None) -> Optional[str]:
+def extract_user_email(thread: EmailThread, handler_domains: list[str], default_user: str | None) -> str | None:
     if default_user:
         return default_user
     # Prefer an internal recipient (mailbox owner) from sent_to/sent_cc
@@ -106,7 +128,7 @@ def extract_user_email(thread: EmailThread, handler_domains: List[str], default_
             return m.sent_from
     return None
 
-def reconcile_participants(triage: ThreadTriage, participants: dict, handler_domains: List[str]) -> ThreadTriage:
+def reconcile_participants(triage: ThreadTriage, participants: dict, handler_domains: list[str]) -> ThreadTriage:
     def is_handler_email(addr: str | None) -> bool:
         if not addr:
             return False
@@ -164,7 +186,7 @@ def normalize_triage(triage: ThreadTriage, ref_hint: str | None) -> ThreadTriage
     return triage
 
 
-def format_thread_for_llm(thread: EmailThread, handler_domains: List[str], max_chars: int = MAX_LLM_THREAD_CHARS) -> tuple[str, str, str]:
+def format_thread_for_llm(thread: EmailThread, handler_domains: list[str], max_chars: int = MAX_LLM_THREAD_CHARS) -> tuple[str, str, str]:
     # returns (messages_text, thread_ref_hint, latest_message_text)
     thread_ref_hint = None
     msgs_out = []
@@ -231,8 +253,8 @@ def stable_thread_key(thread: EmailThread) -> str:
 def stable_uuid(thread_key: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"email_classifier:{thread_key}"))
 
-def build_participants_text(triage: ThreadTriage, participants: dict, user_email: Optional[str]) -> str:
-    def _keep(v: Optional[str]) -> Optional[str]:
+def build_participants_text(triage: ThreadTriage, participants: dict, user_email: str | None) -> str:
+    def _keep(v: str | None) -> str | None:
         if not v:
             return None
         return None if "@" in v else v
@@ -255,7 +277,7 @@ def upsert_by_uuid(col, uuid_str: str, properties: dict) -> None:
         else:
             raise
 
-def batch_upsert_many(col, rows: List[tuple[str, dict]], chunk_size: int = 100) -> None:
+def batch_upsert_many(col, rows: list[tuple[str, dict]], chunk_size: int = 100) -> None:
     if not rows:
         return
     for i in range(0, len(rows), chunk_size):
@@ -299,8 +321,8 @@ def main():
 
     ensure_dir(args.outdir)
     if not args.no_weaviate:
-        from email_classifier.weaviate_service.weaviate_service import ensure_schema, THREAD_CLASS
         from email_classifier.weaviate_service.weaviate_client import get_client
+        from email_classifier.weaviate_service.weaviate_service import THREAD_CLASS, ensure_schema
         ensure_schema()
 
     try:
@@ -315,8 +337,11 @@ def main():
     summary_col = None
     if not args.no_weaviate:
         try:
-            from email_classifier.weaviate_service.weaviate_service import THREAD_CLASS, DAILY_SUMMARY_CLASS
             from email_classifier.weaviate_service.weaviate_client import get_client
+            from email_classifier.weaviate_service.weaviate_service import (
+                DAILY_SUMMARY_CLASS,
+                THREAD_CLASS,
+            )
             client = get_client()
             client.connect()
             threads_col = client.collections.get(THREAD_CLASS)
@@ -328,13 +353,13 @@ def main():
     if os.path.exists(actions_log):
         os.remove(actions_log)
 
-    triages: List[ThreadTriage] = []
+    triages: list[ThreadTriage] = []
 
     default_user = os.getenv("MAILBOX_EMAIL") or None
-    triage_index: List[dict] = []
-    thread_rows: List[tuple[str, dict]] = []
+    triage_index: list[dict] = []
+    thread_rows: list[tuple[str, dict]] = []
     batch_size = int(os.getenv("INGEST_BATCH_SIZE", "100"))
-    for idx, thread in enumerate(tqdm(threads, desc="Triaging threads")):
+    for _idx, thread in enumerate(tqdm(threads, desc="Triaging threads")):
         try:
             messages_text, ref_hint, latest_msg = format_thread_for_llm(thread, handler_domains)
             participants = extract_participants(thread, handler_domains)
@@ -342,8 +367,6 @@ def main():
             dts = [parse_datetime(m.sent_at) for m in thread.messages]
             dts = [d for d in dts if d is not None]
             latest_dt = max(dts) if dts else None
-            earliest_dt = min(dts) if dts else None
-
             user_prompt = THREAD_TRIAGE_USER.format(
                 schema=schema_str(ThreadTriage),
                 handler_domains=handler_domains,
@@ -446,7 +469,7 @@ def main():
     # User/day summaries (stored in Weaviate for retrieval)
     if summary_col is not None and triage_index:
         from datetime import datetime
-        grouped: dict[tuple[str, str], List[ThreadTriage]] = {}
+        grouped: dict[tuple[str, str], list[ThreadTriage]] = {}
         for row in triage_index:
             triage = row["triage"]
             user_email = row["user_email"] or ""
@@ -456,7 +479,7 @@ def main():
             grouped.setdefault(key, []).append(triage)
 
         created_at = datetime.now().isoformat()
-        summary_rows: List[tuple[str, dict]] = []
+        summary_rows: list[tuple[str, dict]] = []
         for (user_email, day), group in grouped.items():
             md = render_user_day_summary_md(group, user_email or "(unknown)", day)
             actionable = [t for t in group if t.email_type=="ACTION_REQUIRED" and t.action_required]

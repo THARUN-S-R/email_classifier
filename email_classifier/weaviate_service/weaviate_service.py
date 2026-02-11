@@ -1,9 +1,11 @@
 from __future__ import annotations
-import weaviate
+
 import logging
-from weaviate.classes.config import Property, DataType, Configure
+
+from weaviate.classes.config import Configure, DataType, Property
+
+from email_classifier.shared.config import DAILY_SUMMARY_CLASS, THREAD_CLASS
 from email_classifier.weaviate_service.weaviate_client import get_client
-from email_classifier.shared.config import THREAD_CLASS, DAILY_SUMMARY_CLASS
 
 logger = logging.getLogger("email_classifier.weaviate_schema")
 

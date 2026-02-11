@@ -1,8 +1,13 @@
 from __future__ import annotations
-import json, re, time, logging
-from typing import Any, Dict, Type, Optional
-from pydantic import BaseModel
+
+import json
+import logging
+import re
+import time
+from typing import Any
+
 from litellm import completion, embedding
+from pydantic import BaseModel
 
 logger = logging.getLogger("email_classifier.llm")
 
@@ -11,12 +16,12 @@ def call_llm(
     system: str,
     user: str,
     temperature: float = 0.1,
-    max_tokens: Optional[int] = None,
+    max_tokens: int | None = None,
     timeout: int = 60,
     max_retries: int = 2,
     retry_backoff: float = 1.5,
 ) -> str:
-    last_err: Optional[Exception] = None
+    last_err: Exception | None = None
     for attempt in range(max_retries + 1):
         try:
             kwargs = {
@@ -53,7 +58,7 @@ def _fix_common_json_issues(s: str) -> str:
     s = re.sub(r",\s*([}\]])", r"\1", s)
     return s
 
-def parse_json_object(text: str) -> Dict[str, Any]:
+def parse_json_object(text: str) -> dict[str, Any]:
     t = _strip_code_fences(text)
     s = t.find("{")
     e = t.rfind("}")
@@ -66,7 +71,7 @@ def parse_json_object(text: str) -> Dict[str, Any]:
         candidate = _fix_common_json_issues(candidate)
         return json.loads(candidate)
 
-def schema_str(model: Type[BaseModel]) -> str:
+def schema_str(model: type[BaseModel]) -> str:
     return json.dumps(model.model_json_schema(), indent=2)
 
 def embed_text(model: str, text: str) -> list[float]:
@@ -77,13 +82,13 @@ def call_llm_json(
     model: str,
     system: str,
     user: str,
-    schema: Optional[str] = None,
+    schema: str | None = None,
     temperature: float = 0.1,
-    max_tokens: Optional[int] = None,
+    max_tokens: int | None = None,
     timeout: int = 60,
     max_attempts: int = 3,
-) -> Dict[str, Any]:
-    last_err: Optional[Exception] = None
+) -> dict[str, Any]:
+    last_err: Exception | None = None
     prompt = user
     for attempt in range(max_attempts):
         raw = call_llm(
@@ -117,9 +122,9 @@ def call_llm_json_model(
     model: str,
     system: str,
     user: str,
-    model_cls: Type[BaseModel],
+    model_cls: type[BaseModel],
     temperature: float = 0.1,
-    max_tokens: Optional[int] = None,
+    max_tokens: int | None = None,
     timeout: int = 60,
     max_attempts: int = 3,
 ) -> BaseModel:

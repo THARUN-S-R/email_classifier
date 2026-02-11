@@ -1,11 +1,12 @@
 from __future__ import annotations
-from typing import List
+
 from datetime import datetime
+
 from email_classifier.shared.models import ThreadTriage
 
 P_RANK = {"P0":0, "P1":1, "P2":2, "P3":3}
 
-def render_summary_md(triages: List[ThreadTriage]) -> str:
+def render_summary_md(triages: list[ThreadTriage]) -> str:
     def best_rank(t: ThreadTriage) -> int:
         if not t.actions:
             return 99
@@ -64,7 +65,7 @@ def render_summary_md(triages: List[ThreadTriage]) -> str:
 
     return "\n".join(lines)
 
-def render_user_day_summary_md(triages: List[ThreadTriage], user_email: str, day: str) -> str:
+def render_user_day_summary_md(triages: list[ThreadTriage], user_email: str, day: str) -> str:
     def best_rank(t: ThreadTriage) -> int:
         if not t.actions:
             return 99
