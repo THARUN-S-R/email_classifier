@@ -123,6 +123,9 @@ def _filter_from_spec(spec: Optional[Dict[str, Any]], allowed_props: Optional[se
                     continue
                 prop = lc_prop
             val = cond.get("value")
+            # Weaviate gRPC rejects nil filter values ("unknown value type <nil>").
+            if val is None:
+                continue
             typ = str(cond.get("type", "string")).lower()
             oper = str(cond.get("operator", "equal")).lower()
             if typ in ("number", "int", "float"):
@@ -132,6 +135,9 @@ def _filter_from_spec(spec: Optional[Dict[str, Any]], allowed_props: Optional[se
                     continue
             elif typ in ("bool", "boolean"):
                 val = str(val).lower() in {"true", "1", "yes"}
+            elif isinstance(val, str) and not val.strip():
+                # Skip empty-string constraints from noisy LLM plans.
+                continue
             if isinstance(val, str) and prop.endswith("_lc"):
                 val = val.lower()
             f = Filter.by_property(prop)
@@ -400,7 +406,12 @@ def get_daily_summaries(filter_spec: Optional[Dict[str, Any]], limit: int = SUMM
             return []
         flt = _filter_from_spec(filter_spec, allowed_props=SUMMARY_PROPS)
         logger.info("get_daily_summaries: filter=%s", _filter_summary(filter_spec))
-        res = col.query.fetch_objects(limit=limit, filters=flt) if flt else col.query.fetch_objects(limit=limit)
+        try:
+            res = col.query.fetch_objects(limit=limit, filters=flt) if flt else col.query.fetch_objects(limit=limit)
+        except Exception as qe:
+            # Bad filter shape/value should not fail the request path.
+            logger.warning("get_daily_summaries filter query failed, retrying without filter: %s", qe)
+            res = col.query.fetch_objects(limit=limit)
         out = [o.properties for o in res.objects]
         logger.info("get_daily_summaries: fetched=%s", len(out))
         return out
