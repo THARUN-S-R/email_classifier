@@ -21,6 +21,7 @@ from email_classifier.ingestion_service.parsing import parse_threads
 from email_classifier.ingestion_service.summarizer import render_summary_md, render_user_day_summary_md
 from email_classifier.shared.logging import setup_logging
 from email_classifier.shared.config import warn_if_missing_llm_keys, CONFIDENCE_MIN, MAX_LLM_THREAD_CHARS
+from weaviate.collections.classes.data import DataObject
 
 P_RANK = {"P0":0, "P1":1, "P2":2, "P3":3}
 logger = logging.getLogger("email_classifier.ingest")
@@ -246,6 +247,35 @@ def upsert_by_uuid(col, uuid_str: str, properties: dict) -> None:
         else:
             raise
 
+def batch_upsert_many(col, rows: List[tuple[str, dict]], chunk_size: int = 100) -> None:
+    if not rows:
+        return
+    for i in range(0, len(rows), chunk_size):
+        chunk = rows[i : i + chunk_size]
+        objs = [DataObject(properties=props, uuid=uid) for uid, props in chunk]
+        try:
+            res = col.data.insert_many(objects=objs)
+        except Exception as e:
+            logger.exception("batch insert failed for chunk starting %s: %s", i, e)
+            # Fallback: try per-row upsert for this chunk
+            for uid, props in chunk:
+                upsert_by_uuid(col, uid, props)
+            continue
+        if not getattr(res, "has_errors", False):
+            continue
+        for idx, err in (res.errors or {}).items():
+            if idx < 0 or idx >= len(chunk):
+                continue
+            uid, props = chunk[idx]
+            msg = (err.message or "").lower()
+            if "already exists" in msg or "conflict" in msg or "duplicate" in msg:
+                try:
+                    col.data.update(uuid=uid, properties=props)
+                except Exception as ue:
+                    logger.exception("batch update failed for uuid=%s: %s", uid, ue)
+            else:
+                logger.error("batch insert row failed uuid=%s: %s", uid, err.message)
+
 def main():
     load_dotenv()
     setup_logging()
@@ -296,11 +326,18 @@ def main():
 
     default_user = os.getenv("MAILBOX_EMAIL") or None
     triage_index: List[dict] = []
+    thread_rows: List[tuple[str, dict]] = []
+    detail_rows: List[tuple[str, dict]] = []
+    batch_size = int(os.getenv("INGEST_BATCH_SIZE", "100"))
     for idx, thread in enumerate(tqdm(threads, desc="Triaging threads")):
         try:
             messages_text, ref_hint, latest_msg = format_thread_for_llm(thread, handler_domains)
             participants = extract_participants(thread, handler_domains)
             user_email = extract_user_email(thread, handler_domains, default_user)
+            dts = [parse_datetime(m.sent_at) for m in thread.messages]
+            dts = [d for d in dts if d is not None]
+            latest_dt = max(dts) if dts else None
+            earliest_dt = min(dts) if dts else None
 
             user_prompt = THREAD_TRIAGE_USER.format(
                 schema=schema_str(ThreadTriage),
@@ -342,67 +379,37 @@ def main():
             thread_key = stable_thread_key(thread)
             thread_uuid = stable_uuid(thread_key)
             if threads_col is not None and detail_col is not None:
-                # Upsert thread object (Weaviate handles vectorization)
-                # Compute latest/earliest sent_at
-                dts = [parse_datetime(m.sent_at) for m in thread.messages]
-                dts = [d for d in dts if d is not None]
-                latest_dt = max(dts) if dts else None
-                earliest_dt = min(dts) if dts else None
                 participants_text = build_participants_text(triage, participants, user_email)
-                upsert_by_uuid(
-                    threads_col,
-                    thread_uuid,
-                    {
-                        "thread_id": thread.thread_id or "",
-                        "thread_key": thread_key or "",
-                        "thread_ref": triage.thread_ref or "",
-                        "email_type": triage.email_type,
-                        "topic": triage.topic or "",
-                        "topic_lc": (triage.topic or "").lower(),
-                        "category": triage.category or "",
-                        "priority_best": best_priority(triage),
-                        "action_required": triage.action_required,
-                        "actions_json": json.dumps([a.model_dump() for a in triage.actions], ensure_ascii=False),
-                        "actions_text": " | ".join([a.action_item for a in triage.actions if a.action_item]),
-                        "counterparty": (triage.entities.get("counterparty") if isinstance(triage.entities, dict) else "") or "",
-                        "counterparty_lc": ((triage.entities.get("counterparty") if isinstance(triage.entities, dict) else "") or "").lower(),
-                        "entities_json": json.dumps(triage.entities, ensure_ascii=False),
-                        "thread_summary": triage.rationale or "",
-                        "latest_message": latest_msg,
-                        "participants_text": participants_text,
-                        "latest_sent_at": latest_dt.isoformat() if latest_dt else "",
-                        "confidence": triage.confidence,
-                        "archive_recommendation": triage.archive_recommendation,
-                        "urgency_reason": triage.urgency_reason or "",
-                        "missing_info_json": json.dumps(triage.missing_info, ensure_ascii=False),
-                        "handler_name": triage.handler_name or "",
-                        "handler_name_lc": (triage.handler_name or "").lower(),
-                        "handler_email": triage.handler_email or "",
-                        "customer_name": triage.customer_name or "",
-                        "customer_name_lc": (triage.customer_name or "").lower(),
-                        "customer_email": triage.customer_email or "",
-                        "user_email": user_email or "",
-                        "user_email_lc": (user_email or "").lower(),
-                    },
-                )
+                thread_rows.append((thread_uuid, {
+                    "thread_id": thread.thread_id or "",
+                    "thread_key": thread_key or "",
+                    "thread_ref": triage.thread_ref or "",
+                    "user_email_lc": (user_email or "").lower(),
+                    "email_type": triage.email_type,
+                    "action_required": triage.action_required,
+                    "priority_best": best_priority(triage),
+                    "topic": triage.topic or "",
+                    "category": triage.category or "",
+                    "actions_text": " | ".join([a.action_item for a in triage.actions if a.action_item]),
+                    "counterparty": (triage.entities.get("counterparty") if isinstance(triage.entities, dict) else "") or "",
+                    "thread_summary": triage.rationale or "",
+                    "latest_message": latest_msg,
+                    "participants_text": participants_text,
+                    "latest_sent_at": latest_dt.isoformat() if latest_dt else "",
+                    "urgency_reason": triage.urgency_reason or "",
+                }))
 
-                upsert_by_uuid(
-                    detail_col,
-                    thread_uuid,
-                    {
-                        "thread_id": thread.thread_id or "",
-                        "thread_key": thread_key or "",
-                        "thread_ref": triage.thread_ref or "",
-                        "user_email": user_email or "",
-                        "user_email_lc": (user_email or "").lower(),
-                        "full_text": build_thread_full_text(thread),
-                        "participants_text": participants_text,
-                        "messages_json": json.dumps([m.model_dump() for m in thread.messages], ensure_ascii=False),
-                        "latest_sent_at": latest_dt.isoformat() if latest_dt else "",
-                        "earliest_sent_at": earliest_dt.isoformat() if earliest_dt else "",
-                        "message_count": len(thread.messages),
-                    },
-                )
+                detail_rows.append((thread_uuid, {
+                    "thread_key": thread_key or "",
+                    "thread_ref": triage.thread_ref or "",
+                    "user_email_lc": (user_email or "").lower(),
+                    "full_text": build_thread_full_text(thread),
+                    "participants_text": participants_text,
+                    "messages_json": json.dumps([m.model_dump() for m in thread.messages], ensure_ascii=False),
+                    "latest_sent_at": latest_dt.isoformat() if latest_dt else "",
+                    "earliest_sent_at": earliest_dt.isoformat() if earliest_dt else "",
+                    "message_count": len(thread.messages),
+                }))
             triage_index.append({
                 "triage": triage,
                 "user_email": user_email,
@@ -431,6 +438,10 @@ def main():
             logger.exception("Failed processing thread_id=%s: %s", getattr(thread, "thread_id", None), e)
             continue
 
+    if threads_col is not None and detail_col is not None:
+        batch_upsert_many(threads_col, thread_rows, chunk_size=batch_size)
+        batch_upsert_many(detail_col, detail_rows, chunk_size=batch_size)
+
     # Write summary artifacts
     out_threads = os.path.join(args.outdir, "threads_output.json")
     write_json(out_threads, [t.model_dump() for t in triages])
@@ -452,24 +463,26 @@ def main():
             grouped.setdefault(key, []).append(triage)
 
         created_at = datetime.now().isoformat()
+        summary_rows: List[tuple[str, dict]] = []
         for (user_email, day), group in grouped.items():
             md = render_user_day_summary_md(group, user_email or "(unknown)", day)
             actionable = [t for t in group if t.email_type=="ACTION_REQUIRED" and t.action_required]
             info = [t for t in group if t.email_type=="INFORMATIONAL_ARCHIVE"]
             irr = [t for t in group if t.email_type=="IRRELEVANT"]
-            summary_col.data.insert(
-                properties={
-                    "day": day,
-                    "user_email": user_email or "",
-                    "user_email_lc": (user_email or "").lower(),
-                    "summary_md": md,
-                    "total_threads": len(group),
-                    "action_required": len(actionable),
-                    "informational": len(info),
-                    "irrelevant": len(irr),
-                    "created_at": created_at,
-                }
-            )
+            summary_key = f"{(user_email or '').lower()}|{day}"
+            summary_uuid = str(uuid.uuid5(uuid.NAMESPACE_URL, f"email_classifier:summary:{summary_key}"))
+            summary_rows.append((summary_uuid, {
+                "day": day,
+                "user_email": user_email or "",
+                "user_email_lc": (user_email or "").lower(),
+                "summary_md": md,
+                "total_threads": len(group),
+                "action_required": len(actionable),
+                "informational": len(info),
+                "irrelevant": len(irr),
+                "created_at": created_at,
+            }))
+        batch_upsert_many(summary_col, summary_rows, chunk_size=batch_size)
 
     if client:
         client.close()

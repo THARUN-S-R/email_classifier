@@ -15,11 +15,13 @@ from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 
 from email_classifier.chat_service.agent_tools import (
+    bm25_search_threads,
     get_collection_properties,
     get_daily_summaries,
     get_thread_detail,
     hybrid_search_summaries,
     hybrid_search_threads,
+    semantic_search_threads,
     search_threads,
 )
 from email_classifier.langchain_agent.mongo_history import MongoChatHistory
@@ -89,7 +91,7 @@ def _detail_view(d: Dict[str, Any], include_full_text: bool) -> Dict[str, Any]:
     return out
 
 
-async def _build_plan(question: str) -> Dict[str, Any]:
+def _build_plan_sync(question: str) -> Dict[str, Any]:
     t0 = time.perf_counter()
     model = os.getenv("LLM_MODEL", "gpt-4o-mini")
     props = get_collection_properties()
@@ -99,8 +101,7 @@ async def _build_plan(question: str) -> Dict[str, Any]:
         properties_json=json.dumps(props, ensure_ascii=False),
         schema=schema,
     )
-    raw = await asyncio.to_thread(
-        call_llm_json,
+    raw = call_llm_json(
         model=model,
         system=QUERY_TO_FILTER_SYSTEM,
         user=user,
@@ -111,6 +112,10 @@ async def _build_plan(question: str) -> Dict[str, Any]:
     return QueryPlan.model_validate(raw).model_dump()
 
 
+async def _build_plan(question: str) -> Dict[str, Any]:
+    return await asyncio.to_thread(_build_plan_sync, question)
+
+
 @tool("build_plan")
 async def tool_build_plan(question: str) -> Dict[str, Any]:
     """Build a compact QueryPlan from the user question."""
@@ -118,7 +123,7 @@ async def tool_build_plan(question: str) -> Dict[str, Any]:
     return await _build_plan(question)
 
 
-async def _refine_plan(question: str, plan: Dict[str, Any]) -> Dict[str, Any]:
+def _refine_plan_sync(question: str, plan: Dict[str, Any]) -> Dict[str, Any]:
     t0 = time.perf_counter()
     model = os.getenv("LLM_MODEL", "gpt-4o-mini")
     props = get_collection_properties()
@@ -129,8 +134,7 @@ async def _refine_plan(question: str, plan: Dict[str, Any]) -> Dict[str, Any]:
         filters_json=json.dumps(plan, ensure_ascii=False),
         schema=schema,
     )
-    raw = await asyncio.to_thread(
-        call_llm_json,
+    raw = call_llm_json(
         model=model,
         system=QUERY_REFINE_SYSTEM,
         user=user,
@@ -141,22 +145,52 @@ async def _refine_plan(question: str, plan: Dict[str, Any]) -> Dict[str, Any]:
     return QueryPlan.model_validate(raw).model_dump()
 
 
-async def _retrieve(question: str, plan: Optional[Any] = None) -> Dict[str, Any]:
+async def _refine_plan(question: str, plan: Dict[str, Any]) -> Dict[str, Any]:
+    return await asyncio.to_thread(_refine_plan_sync, question, plan)
+
+
+def _retrieve(question: str, plan: Optional[Any] = None) -> Dict[str, Any]:
     t0 = time.perf_counter()
+    q_email = None
+    m = EMAIL_RE.search(question or "")
+    if m:
+        q_email = m.group(0).lower()
+
     if isinstance(plan, str):
         try:
             plan = json.loads(plan)
         except Exception:
             plan = None
     if not isinstance(plan, dict):
-        plan = await _build_plan(question)
+        # Fast path: explicit mailbox/email query skips LLM planning
+        if q_email:
+            plan = {
+                "thread_filter": {
+                    "op": "and",
+                    "conditions": [{"property": "user_email_lc", "operator": "equal", "type": "string", "value": q_email}],
+                    "groups": [],
+                },
+                "detail_filter": {
+                    "op": "and",
+                    "conditions": [{"property": "user_email_lc", "operator": "equal", "type": "string", "value": q_email}],
+                    "groups": [],
+                },
+                "summary_filter": {
+                    "op": "and",
+                    "conditions": [{"property": "user_email_lc", "operator": "equal", "type": "string", "value": q_email}],
+                    "groups": [],
+                },
+                "search_query": question,
+                "need_detail": False,
+            }
+            logger.info("tool_retrieve: fast-plan user_email_lc=%s", q_email)
+        else:
+            # Sync fallback for non-email queries
+            plan = _build_plan_sync(question)
     plan_obj = QueryPlan.model_validate(plan)
     search_q = plan_obj.search_query or question
 
-    q_email = None
-    m = EMAIL_RE.search(question or "")
-    if m:
-        q_email = m.group(0).lower()
+    if q_email:
         eq = {
             "op": "and",
             "conditions": [{"property": "user_email_lc", "operator": "equal", "type": "string", "value": q_email}],
@@ -166,24 +200,32 @@ async def _retrieve(question: str, plan: Optional[Any] = None) -> Dict[str, Any]
         plan_obj.detail_filter = _and_filter(plan_obj.detail_filter, eq)
         plan_obj.summary_filter = _and_filter(plan_obj.summary_filter, eq)
 
-    # Exactly two retrieval calls for threads: with-filter and without-filter.
-    tasks = [
-        asyncio.to_thread(hybrid_search_threads, search_q, 5, 0.5, None),
-        asyncio.to_thread(hybrid_search_threads, search_q, 5, 0.5, plan_obj.thread_filter),
-    ]
-    unfiltered, filtered = await asyncio.gather(*tasks, return_exceptions=True)
-    threads_unf = unfiltered if isinstance(unfiltered, list) else []
-    threads_flt = filtered if isinstance(filtered, list) else []
+    retrieve_limit = int(os.getenv("RETRIEVE_THREADS_LIMIT", "3"))
+    # Stage 1: hybrid + bm25 (with and without filter)
+    threads_unf = hybrid_search_threads(search_q, retrieve_limit, 0.8, None)
+    threads_flt = hybrid_search_threads(search_q, retrieve_limit, 0.8, plan_obj.thread_filter)
+    threads_unf += bm25_search_threads(search_q, retrieve_limit, None)
+    threads_flt += bm25_search_threads(search_q, retrieve_limit, plan_obj.thread_filter)
     # Prefer filtered results first, then backfill from unfiltered.
-    threads = _dedupe_threads(threads_flt + threads_unf, limit=5)
+    threads = _dedupe_threads(threads_flt + threads_unf, limit=retrieve_limit)
 
-    # Single refine retry only when both calls are empty.
+    # Stage 2 fallback: semantic only if no docs after hybrid + bm25
     if not threads:
-        refined = await _refine_plan(question, plan_obj.model_dump())
+        sem_unf = semantic_search_threads(search_q, retrieve_limit, None)
+        sem_flt = semantic_search_threads(search_q, retrieve_limit, plan_obj.thread_filter)
+        threads = _dedupe_threads(sem_flt + sem_unf, limit=retrieve_limit)
+
+    # Optional refine retry only when both calls are empty (off by default for speed).
+    enable_refine = os.getenv("RETRIEVE_ENABLE_REFINE", "false").lower() in {"1", "true", "yes"}
+    if not threads and enable_refine:
+        refined = _refine_plan_sync(question, plan_obj.model_dump())
         rplan = QueryPlan.model_validate(refined)
-        refined_res = await asyncio.to_thread(hybrid_search_threads, search_q, 5, 0.5, rplan.thread_filter)
+        refined_res = hybrid_search_threads(search_q, retrieve_limit, 0.5, rplan.thread_filter)
+        refined_res += bm25_search_threads(search_q, retrieve_limit, rplan.thread_filter)
+        if not refined_res:
+            refined_res = semantic_search_threads(search_q, retrieve_limit, rplan.thread_filter)
         if isinstance(refined_res, list):
-            threads = _dedupe_threads(refined_res, limit=5)
+            threads = _dedupe_threads(refined_res, limit=retrieve_limit)
 
     thread_ids = []
     seen = set()
@@ -196,20 +238,17 @@ async def _retrieve(question: str, plan: Optional[Any] = None) -> Dict[str, Any]
     detail_top_n = int(os.getenv("RETRIEVE_DETAIL_TOP_N", "3"))
     detail_ids = thread_ids[: max(1, detail_top_n)]
 
-    detail_rows = await asyncio.gather(
-        *(asyncio.to_thread(get_thread_detail, tid) for tid in detail_ids),
-        return_exceptions=True,
-    )
-    details = [d for d in detail_rows if isinstance(d, dict)]
+    details = []
+    for tid in detail_ids:
+        d = get_thread_detail(tid)
+        if isinstance(d, dict):
+            details.append(d)
 
     summaries: List[Dict[str, Any]] = []
     q = question.lower()
     if "summary" in q or "summaries" in q:
-        s1, s2 = await asyncio.gather(
-            asyncio.to_thread(get_daily_summaries, plan_obj.summary_filter, 5),
-            asyncio.to_thread(hybrid_search_summaries, search_q, 5, 0.5),
-            return_exceptions=True,
-        )
+        s1 = get_daily_summaries(plan_obj.summary_filter, 5)
+        s2 = hybrid_search_summaries(search_q, 5, 0.5)
         if isinstance(s1, list):
             summaries.extend(s1)
         if isinstance(s2, list):
@@ -226,10 +265,10 @@ async def _retrieve(question: str, plan: Optional[Any] = None) -> Dict[str, Any]
 
 
 @tool("retrieve")
-async def tool_retrieve(question: str, plan: Optional[Any] = None) -> Dict[str, Any]:
+def tool_retrieve(question: str, plan: Optional[Any] = None) -> Dict[str, Any]:
     """Retrieve top 5 merged thread candidates (with and without filters), then fetch full details."""
     logger.info("tool_retrieve: question_len=%s has_plan=%s", len(question or ""), bool(plan))
-    return await _retrieve(question, plan)
+    return _retrieve(question, plan)
 
 
 def _sanitize_retrieved(retrieved: Dict[str, Any]) -> Dict[str, Any]:
@@ -248,7 +287,7 @@ def _sanitize_retrieved(retrieved: Dict[str, Any]) -> Dict[str, Any]:
         safe_details.append(v)
 
     return {
-        "threads": [_thread_view(t) for t in threads_src[:5]],
+        "threads": [_thread_view(t) for t in threads_src[: int(os.getenv('FINAL_ANSWER_THREADS_TOP_N', '3'))]],
         "details": safe_details,
         "summaries": sums_src[:5],
     }
@@ -263,7 +302,7 @@ async def _final_answer(question: str, retrieved: Optional[Any] = None) -> str:
         except Exception:
             retrieved = None
     if not isinstance(retrieved, dict):
-        retrieved = await _retrieve(question, None)
+        retrieved = _retrieve(question, None)
     payload = json.dumps(_sanitize_retrieved(retrieved), ensure_ascii=False, indent=2)
     user = AGENT_ANSWER_USER.format(question=question, retrieved_json=payload)
     final_max_tokens = int(os.getenv("FINAL_ANSWER_MAX_TOKENS", "450"))

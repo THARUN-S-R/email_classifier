@@ -77,16 +77,13 @@ def _run_with_optional_rerank(search_fn, *, query_text: str, rerank_prop: str, *
     return search_fn(query=query_text, **kwargs)
 
 THREAD_PROPS = {
-    "thread_id","thread_key","thread_ref","email_type","topic","topic_lc","category",
-    "priority_best","action_required","actions_json","counterparty","counterparty_lc",
-    "entities_json","thread_summary","latest_message","participants_text","latest_sent_at",
-    "confidence","archive_recommendation","urgency_reason","missing_info_json","handler_name",
-    "handler_name_lc","handler_email","customer_name","customer_name_lc","customer_email",
-    "user_email","user_email_lc",
+    "thread_id","thread_key","thread_ref","user_email_lc","email_type","action_required",
+    "priority_best","topic","category","actions_text","counterparty","thread_summary",
+    "latest_message","participants_text","latest_sent_at","urgency_reason",
 }
 
 DETAIL_PROPS = {
-    "thread_id","thread_key","thread_ref","user_email","user_email_lc","full_text",
+    "thread_key","thread_ref","user_email_lc","full_text",
     "participants_text","messages_json","latest_sent_at","earliest_sent_at","message_count",
 }
 

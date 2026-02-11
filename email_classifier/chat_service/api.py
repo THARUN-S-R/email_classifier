@@ -8,7 +8,6 @@ from typing import List, Dict, Optional
 
 ROOT = Path(__file__).resolve().parents[1]
 
-from email_classifier.chat_service.agent_graph import build_graph
 from email_classifier.langchain_agent.agent import LangChainAgent
 from email_classifier.shared.logging import setup_logging, set_request_id
 from email_classifier.shared.config import warn_if_missing_llm_keys
@@ -16,7 +15,7 @@ from email_classifier.shared.config import warn_if_missing_llm_keys
 load_dotenv()
 setup_logging()
 warn_if_missing_llm_keys()
-app = FastAPI(title="Email Ops Agent (LangGraph)")
+app = FastAPI(title="Email Ops Agent (LangChain)")
 
 @app.middleware("http")
 async def add_request_id(request: Request, call_next):
@@ -26,7 +25,6 @@ async def add_request_id(request: Request, call_next):
     response.headers["x-request-id"] = req_id
     return response
 
-agent = build_graph()
 lc_agent = LangChainAgent(max_steps=10)
 
 class AskRequest(BaseModel):
@@ -36,20 +34,6 @@ class AskRequest(BaseModel):
 
 class AskResponse(BaseModel):
     answer: str
-
-@app.post("/ask", response_model=AskResponse)
-async def ask(req: AskRequest):
-    model = os.getenv("LLM_MODEL", "gpt-4o-mini")
-    try:
-        question = _with_history(req.question, req.history, req.session_id)
-        from fastapi.concurrency import run_in_threadpool
-        out = await run_in_threadpool(agent.invoke, {"question": question, "model": model})
-        answer = out["answer"]
-        if req.session_id:
-            _MEMORY.setdefault(req.session_id, []).append({"role": "assistant", "content": answer})
-        return AskResponse(answer=answer)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Agent error: {e}") from e
 
 @app.post("/ask_langchain", response_model=AskResponse)
 async def ask_langchain(req: AskRequest):
@@ -65,25 +49,6 @@ async def ask_langchain(req: AskRequest):
 
 # In-memory chat history (per session_id)
 _MEMORY: Dict[str, List[Dict[str, str]]] = {}
-
-def _with_history(question: str, history: Optional[List[Dict[str, str]]], session_id: Optional[str]) -> str:
-    if history is None and session_id:
-        history = _MEMORY.get(session_id)
-    if history:
-        # Keep last 6 turns to limit prompt size
-        h = history[-12:]
-        parts = []
-        for msg in h:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            parts.append(f"{role.upper()}: {content}")
-        parts.append(f"USER: {question}")
-        combined = "\n".join(parts)
-    else:
-        combined = question
-    if session_id:
-        _MEMORY.setdefault(session_id, []).append({"role": "user", "content": question})
-    return combined
 
 @app.get("/health")
 def health():
