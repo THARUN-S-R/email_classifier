@@ -27,7 +27,7 @@ async def add_request_id(request: Request, call_next):
     return response
 
 agent = build_graph()
-lc_agent = LangChainAgent()
+lc_agent = LangChainAgent(max_steps=10)
 
 class AskRequest(BaseModel):
     question: str
@@ -38,11 +38,12 @@ class AskResponse(BaseModel):
     answer: str
 
 @app.post("/ask", response_model=AskResponse)
-def ask(req: AskRequest):
+async def ask(req: AskRequest):
     model = os.getenv("LLM_MODEL", "gpt-4o-mini")
     try:
         question = _with_history(req.question, req.history, req.session_id)
-        out = agent.invoke({"question": question, "model": model})
+        from fastapi.concurrency import run_in_threadpool
+        out = await run_in_threadpool(agent.invoke, {"question": question, "model": model})
         answer = out["answer"]
         if req.session_id:
             _MEMORY.setdefault(req.session_id, []).append({"role": "assistant", "content": answer})
@@ -51,11 +52,11 @@ def ask(req: AskRequest):
         raise HTTPException(status_code=500, detail=f"Agent error: {e}") from e
 
 @app.post("/ask_langchain", response_model=AskResponse)
-def ask_langchain(req: AskRequest):
+async def ask_langchain(req: AskRequest):
     model = os.getenv("LLM_MODEL", "gpt-4o-mini")
     try:
         question = req.question
-        ans = lc_agent.run(question, model, session_id=req.session_id)
+        ans = await lc_agent.arun(question, model, req.session_id)
         if req.session_id:
             _MEMORY.setdefault(req.session_id, []).append({"role": "assistant", "content": ans})
         return AskResponse(answer=ans)

@@ -10,8 +10,8 @@ DETAIL_CLASS = "EmailThreadDetail"
 DAILY_SUMMARY_CLASS = "DailySummary"
 
 # Retrieval defaults
-THREAD_FETCH_LIMIT = int(os.getenv("THREAD_FETCH_LIMIT", "10"))
-DETAIL_FETCH_LIMIT = int(os.getenv("DETAIL_FETCH_LIMIT", "8"))
+THREAD_FETCH_LIMIT = int(os.getenv("THREAD_FETCH_LIMIT", "7"))
+DETAIL_FETCH_LIMIT = int(os.getenv("DETAIL_FETCH_LIMIT", "5"))
 SUMMARY_FETCH_LIMIT = int(os.getenv("SUMMARY_FETCH_LIMIT", "5"))
 FETCH_CANDIDATES_LIMIT = int(os.getenv("FETCH_CANDIDATES_LIMIT", "50"))
 

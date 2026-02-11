@@ -19,7 +19,7 @@ st.caption("Read-only assistant for prioritising workload and answering ad-hoc q
 with st.sidebar:
     st.header("Settings")
     api_url = st.text_input("Agent API URL", value=DEFAULT_API_URL)
-    timeout_s = st.slider("Request timeout (seconds)", 10, 300, 200)
+    timeout_s = st.slider("Request timeout (seconds)", 10, 700, 400)
     outdir = st.text_input("Outdir (daily_summary.md)", value=DEFAULT_OUTDIR)
 
     st.divider()
@@ -42,8 +42,6 @@ if "session_id" not in st.session_state:
 
 tab_chat, tab_summary = st.tabs(["Chat", "Daily Summary"])
 
-col_chat, col_debug = tab_chat.columns([2, 1], gap="large")
-
 def call_agent(question: str) -> Dict[str, Any]:
     url = api_url.rstrip("/") + "/ask_langchain" #ask_langchain ask
     payload = {
@@ -55,7 +53,7 @@ def call_agent(question: str) -> Dict[str, Any]:
     resp.raise_for_status()
     return resp.json()
 
-with col_chat:
+with tab_chat:
     st.subheader("Chat")
 
     chat_history: List[Dict[str, str]] = st.session_state["chat"]
@@ -65,17 +63,6 @@ with col_chat:
             st.markdown(msg["content"])
     if "last_latency_s" in st.session_state and st.session_state["last_latency_s"] is not None:
         st.caption(f"Last response time: {st.session_state['last_latency_s']:.2f}s")
-
-    # Input handled at page bottom to keep it fixed in layout
-
-with col_debug:
-    st.subheader("Debug / Payload (optional)")
-    st.caption("Useful for interview demo: show raw API response when needed.")
-
-    if st.session_state["last_result"] is None:
-        st.info("Ask a question to see the latest API response here.")
-    else:
-        st.json(st.session_state["last_result"])
 
     st.divider()
     st.subheader("Quick actions")
@@ -99,7 +86,7 @@ with tab_summary:
 user_q = st.chat_input("Ask about workload, claims, brokers, actions, priorities…")
 if user_q:
     chat_history.append({"role": "user", "content": user_q})
-    with col_chat:
+    with tab_chat:
         with st.spinner("Thinking..."):
             try:
                 t0 = time.time()

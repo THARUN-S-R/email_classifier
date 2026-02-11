@@ -11,12 +11,12 @@ ROOT = Path(__file__).resolve().parents[1]
 from email_classifier.shared.models import EmailThread, ThreadTriage
 from email_classifier.shared.utils import (
     ensure_dir, load_json, write_text, write_json, append_jsonl,
-    extract_claim_ref, sender_domain, redact_for_llm, redact_for_index, raw_store,
+    extract_claim_ref, CLAIM_REF_RE, sender_domain, redact_for_llm, redact_for_index, raw_store,
     extract_signature_name, extract_salutation_name, name_from_email,
     parse_datetime
 )
 from email_classifier.shared.llm import call_llm_json_model, schema_str
-from email_classifier.shared.prompts import THREAD_TRIAGE_SYSTEM, THREAD_TRIAGE_USER
+from email_classifier.shared.prompts import THREAD_TRIAGE_SYSTEM, THREAD_TRIAGE_USER, FEW_SHOT_EXAMPLES
 from email_classifier.ingestion_service.parsing import parse_threads
 from email_classifier.ingestion_service.summarizer import render_summary_md, render_user_day_summary_md
 from email_classifier.shared.logging import setup_logging
@@ -153,8 +153,13 @@ def normalize_triage(triage: ThreadTriage, ref_hint: str | None) -> ThreadTriage
         triage.action_required = False
         triage.missing_info = list(set(triage.missing_info + ["action_details"]))
 
-    if not triage.thread_ref:
-        triage.thread_ref = ref_hint or None
+    # Prefer deterministic claim reference extracted from text over LLM output
+    if ref_hint:
+        if (not triage.thread_ref) or (not CLAIM_REF_RE.match((triage.thread_ref or "").strip())):
+            triage.thread_ref = ref_hint
+    elif triage.thread_ref:
+        m = CLAIM_REF_RE.match((triage.thread_ref or "").strip())
+        triage.thread_ref = m.group(0).upper() if m else triage.thread_ref
     return triage
 
 
@@ -232,6 +237,15 @@ def build_participants_text(triage: ThreadTriage, participants: dict, user_email
     ]
     return " | ".join([v for v in vals if v])
 
+def upsert_by_uuid(col, uuid_str: str, properties: dict) -> None:
+    try:
+        col.data.insert(uuid=uuid_str, properties=properties)
+    except Exception as e:
+        if "already exists" in str(e).lower():
+            col.data.update(uuid=uuid_str, properties=properties)
+        else:
+            raise
+
 def main():
     load_dotenv()
     setup_logging()
@@ -291,6 +305,7 @@ def main():
             user_prompt = THREAD_TRIAGE_USER.format(
                 schema=schema_str(ThreadTriage),
                 handler_domains=handler_domains,
+                few_shot_examples=FEW_SHOT_EXAMPLES,
                 messages=messages_text
             )
 
@@ -298,6 +313,7 @@ def main():
                 model=model,
                 system=THREAD_TRIAGE_SYSTEM,
                 user=user_prompt,
+                model_cls=ThreadTriage,
                 temperature=0.1,
             )
             triage = raw_out
@@ -333,9 +349,10 @@ def main():
                 latest_dt = max(dts) if dts else None
                 earliest_dt = min(dts) if dts else None
                 participants_text = build_participants_text(triage, participants, user_email)
-                threads_col.data.insert(
-                    uuid=thread_uuid,
-                    properties={
+                upsert_by_uuid(
+                    threads_col,
+                    thread_uuid,
+                    {
                         "thread_id": thread.thread_id or "",
                         "thread_key": thread_key or "",
                         "thread_ref": triage.thread_ref or "",
@@ -366,12 +383,13 @@ def main():
                         "customer_email": triage.customer_email or "",
                         "user_email": user_email or "",
                         "user_email_lc": (user_email or "").lower(),
-                    }
+                    },
                 )
 
-                detail_col.data.insert(
-                    uuid=thread_uuid,
-                    properties={
+                upsert_by_uuid(
+                    detail_col,
+                    thread_uuid,
+                    {
                         "thread_id": thread.thread_id or "",
                         "thread_key": thread_key or "",
                         "thread_ref": triage.thread_ref or "",
@@ -383,7 +401,7 @@ def main():
                         "latest_sent_at": latest_dt.isoformat() if latest_dt else "",
                         "earliest_sent_at": earliest_dt.isoformat() if earliest_dt else "",
                         "message_count": len(thread.messages),
-                    }
+                    },
                 )
             triage_index.append({
                 "triage": triage,

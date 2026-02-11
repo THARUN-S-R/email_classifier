@@ -15,10 +15,7 @@ def _env_int(name: str, default: int) -> int:
     except ValueError:
         return default
 
-def get_client() -> weaviate.WeaviateClient:
-    global _CLIENT
-    if _CLIENT is not None:
-        return _CLIENT
+def _connect_custom() -> weaviate.WeaviateClient:
     url = os.getenv("WEAVIATE_URL", "http://localhost:8080")
     parsed = urlparse(url)
 
@@ -30,13 +27,28 @@ def get_client() -> weaviate.WeaviateClient:
     grpc_port = _env_int("WEAVIATE_GRPC_PORT", 50051)
     grpc_secure = os.getenv("WEAVIATE_GRPC_SECURE", "false").lower() == "true"
 
-    _CLIENT = weaviate.connect_to_custom(
+    skip_init_checks = os.getenv("WEAVIATE_SKIP_INIT_CHECKS", "true").lower() == "true"
+
+    return weaviate.connect_to_custom(
         http_host=http_host,
         http_port=http_port,
         http_secure=http_secure,
         grpc_host=grpc_host,
         grpc_port=grpc_port,
         grpc_secure=grpc_secure,
+        skip_init_checks=skip_init_checks,
     )
+
+
+def get_client() -> weaviate.WeaviateClient:
+    global _CLIENT
+    if _CLIENT is not None:
+        return _CLIENT
+    _CLIENT = _connect_custom()
     atexit.register(_CLIENT.close)
     return _CLIENT
+
+
+def get_fresh_client() -> weaviate.WeaviateClient:
+    """Per-call client for concurrent operations."""
+    return _connect_custom()

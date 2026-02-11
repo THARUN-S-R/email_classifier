@@ -7,6 +7,7 @@ from langgraph.graph import StateGraph, END
 import logging
 from email_classifier.shared.models import QueryPlan, ThreadSelection
 from email_classifier.shared.config import MAX_DETAIL_CHARS
+from email_classifier.shared.utils import extract_claim_ref
 from email_classifier.shared.llm import call_llm_json, call_llm, schema_str
 from email_classifier.shared.prompts import (
     QUERY_TO_FILTER_SYSTEM, QUERY_TO_FILTER_USER,
@@ -26,6 +27,7 @@ from email_classifier.chat_service.agent_tools import (
     get_daily_summaries,
     bm25_search_summaries,
     hybrid_search_summaries,
+    get_collection_properties,
 )
 
 logger = logging.getLogger("email_classifier.agent_graph")
@@ -42,16 +44,28 @@ def node_interpret(state: AgentState) -> AgentState:
     model = state["model"]
     logger.info("node_interpret: question_len=%s", len(state.get("question") or ""))
     schema = schema_str(QueryPlan)
-    user = QUERY_TO_FILTER_USER.format(question=state["question"], schema=schema)
+    user = QUERY_TO_FILTER_USER.format(
+        question=state["question"],
+        properties_json=json.dumps(get_collection_properties(), ensure_ascii=False),
+        schema=schema,
+    )
     raw = call_llm_json(
         model=model,
         system=QUERY_TO_FILTER_SYSTEM,
         user=user,
         schema=schema,
-        max_tokens=400,
         temperature=0.0,
     )
     plan = QueryPlan.model_validate(raw)
+    # Hard override for explicit claim refs to avoid LLM filter misses
+    claim_ref = extract_claim_ref(state.get("question"), state.get("question"))
+    if claim_ref:
+        plan.thread_filter = {
+            "path": ["thread_ref"],
+            "operator": "Equal",
+            "valueText": claim_ref,
+        }
+        logger.info("node_interpret: override thread_filter for claim_ref=%s", claim_ref)
     return {"plan": plan.model_dump(), "attempts": 0, "need_refine": False}
 
 def _refine_filters(question: str, plan: QueryPlan, model: str) -> QueryPlan:
@@ -59,6 +73,7 @@ def _refine_filters(question: str, plan: QueryPlan, model: str) -> QueryPlan:
     schema = schema_str(QueryPlan)
     user = QUERY_REFINE_USER.format(
         question=question,
+        properties_json=json.dumps(get_collection_properties(), ensure_ascii=False),
         filters_json=json.dumps(plan.model_dump(), ensure_ascii=False),
         schema=schema,
     )
@@ -67,7 +82,6 @@ def _refine_filters(question: str, plan: QueryPlan, model: str) -> QueryPlan:
         system=QUERY_REFINE_SYSTEM,
         user=user,
         schema=schema,
-        max_tokens=300,
         temperature=0.0,
     )
     return QueryPlan.model_validate(raw)
@@ -97,7 +111,6 @@ def _select_relevant_threads(question: str, threads: List[Dict[str, Any]], model
         system=THREAD_SELECT_SYSTEM,
         user=user,
         schema=schema,
-        max_tokens=300,
         temperature=0.0,
     )
     sel = ThreadSelection.model_validate(raw)
@@ -113,25 +126,40 @@ def node_retrieve(state: AgentState) -> AgentState:
     attempts = int(state.get("attempts", 0))
     logger.info("node_retrieve: question_len=%s attempts=%s", len(question or ""), attempts)
     search_q = plan.search_query or question
-    threads = search_threads(plan.thread_filter, limit=10)
-    sem_threads = semantic_search_threads(search_q, limit=8, filter_spec=plan.thread_filter) if search_q else []
-    bm_threads = bm25_search_threads(search_q, limit=8, filter_spec=plan.thread_filter) if search_q else []
-    hyb_threads = hybrid_search_threads(search_q, limit=8, filter_spec=plan.thread_filter) if search_q else []
+
+    # Step 1: retrieve without filters
+    base_threads = search_threads(None, limit=10)
+    base_threads += semantic_search_threads(search_q, limit=8, filter_spec=None) if search_q else []
+    base_threads += bm25_search_threads(search_q, limit=8, filter_spec=None) if search_q else []
+    base_threads += hybrid_search_threads(search_q, limit=8, filter_spec=None) if search_q else []
 
     # merge by thread_key
     def _key(t: Dict[str, Any]) -> Optional[str]:
         return t.get("thread_key") or t.get("thread_ref")
 
-    merged = { _key(t): t for t in threads if _key(t) }
-    for bucket in (sem_threads, bm_threads, hyb_threads):
-        for t in bucket:
-            tkey = _key(t)
-            if tkey and tkey not in merged:
-                merged[tkey] = t
+    merged = { _key(t): t for t in base_threads if _key(t) }
     threads = list(merged.values())[:10]
-    if question:
+
+    # Step 2: LLM selects relevant docs from unfiltered pool
+    selected = threads
+    if question and len(threads) > 3:
         selected, empty_sel = _select_relevant_threads(question, threads, model)
-        threads = selected if not empty_sel else []
+        selected = selected if not empty_sel else threads
+
+    # Step 3: apply LLM-generated filters directly in Weaviate
+    filtered_threads = []
+    if plan.thread_filter:
+        filtered_threads = search_threads(plan.thread_filter, limit=10)
+        filtered_threads += semantic_search_threads(search_q, limit=8, filter_spec=plan.thread_filter) if search_q else []
+        filtered_threads += bm25_search_threads(search_q, limit=8, filter_spec=plan.thread_filter) if search_q else []
+        filtered_threads += hybrid_search_threads(search_q, limit=8, filter_spec=plan.thread_filter) if search_q else []
+
+    merged = { _key(t): t for t in selected if _key(t) }
+    for t in filtered_threads:
+        tkey = _key(t)
+        if tkey and tkey not in merged:
+            merged[tkey] = t
+    threads = list(merged.values())[:10]
 
     # If user wants details and we have a single thread, fetch messages
     q = question.lower()
@@ -140,16 +168,18 @@ def node_retrieve(state: AgentState) -> AgentState:
     )
     wants_summary = "summary" in q or "summaries" in q
     details = []
-    if wants_detail and len(threads) == 1:
-        tkey = threads[0].get("thread_key") or threads[0].get("thread_ref")
-        if tkey:
-            detail = get_thread_detail(tkey)
-            if detail:
-                details = [detail]
-    elif question:
-        details = semantic_search_details(search_q, limit=8, filter_spec=plan.detail_filter)
-        details += bm25_search_details(search_q, limit=8, filter_spec=plan.detail_filter)
-        details += hybrid_search_details(search_q, limit=8, filter_spec=plan.detail_filter)
+    # Step 4: fetch full thread content for all merged thread ids
+    thread_ids = []
+    seen = set()
+    for t in threads:
+        tkey = t.get("thread_key") or t.get("thread_ref")
+        if tkey and tkey not in seen:
+            seen.add(tkey)
+            thread_ids.append(tkey)
+    for tkey in thread_ids:
+        detail = get_thread_detail(tkey)
+        if detail:
+            details.append(detail)
 
     # Keep only details for threads in the merged set when possible
     if details and threads:
@@ -184,7 +214,7 @@ def node_generate_answer(state: AgentState) -> AgentState:
     model = state["model"]
     payload = json.dumps(_sanitize_retrieved(state.get("retrieved", {})), indent=2, ensure_ascii=False)
     user = AGENT_ANSWER_USER.format(question=state["question"], retrieved_json=payload)
-    ans = call_llm(model=model, system=AGENT_ANSWER_SYSTEM, user=user, max_tokens=700, temperature=0.2)
+    ans = call_llm(model=model, system=AGENT_ANSWER_SYSTEM, user=user, temperature=0.2)
     return {"answer": ans.strip()}
 
 def _sanitize_retrieved(retrieved: Dict[str, Any]) -> Dict[str, Any]:
@@ -201,6 +231,25 @@ def _sanitize_retrieved(retrieved: Dict[str, Any]) -> Dict[str, Any]:
         sanitized_details.append(d)
     out["details"] = sanitized_details
     return out
+
+def _filter_has_thread_ref(filter_spec: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(filter_spec, dict):
+        return False
+    if "path" in filter_spec:
+        path = filter_spec.get("path") or []
+        return len(path) > 0 and path[0] == "thread_ref"
+    if "operator" in filter_spec and "operands" in filter_spec:
+        for op in filter_spec.get("operands") or []:
+            if _filter_has_thread_ref(op):
+                return True
+    if "conditions" in filter_spec or "groups" in filter_spec:
+        for cond in filter_spec.get("conditions") or []:
+            if isinstance(cond, dict) and cond.get("property") == "thread_ref":
+                return True
+        for grp in filter_spec.get("groups") or []:
+            if _filter_has_thread_ref(grp):
+                return True
+    return False
 
 def build_graph():
     g = StateGraph(AgentState)

@@ -75,3 +75,37 @@ warn_redundant_casts = true
 warn_unreachable = true
 no_implicit_optional = true
 exclude = "(^\\.venv/|^venv/|^weaviate_data/|^out/|^outputs/)"
+
+[tool.hatch.build]
+# Only include your package + core files
+include = [
+  "/email_classifier",
+  "/README.md",
+  "/pyproject.toml",
+]
+
+# Exclude junk / local data / outputs
+exclude = [
+  "/.venv",
+  "/venv",
+  "/build",
+  "/dist",
+  "/.pytest_cache",
+  "/.mypy_cache",
+  "/.ruff_cache",
+  "/__pycache__",
+  "**/*.py[cod]",
+  "**/__pycache__",
+  "/weaviate_data",
+  "/out",
+  "/out_*",
+  "/outputs",
+  "/data",
+  "/datasets",
+  "/notebooks",
+  "/wandb",
+  "/runs",
+  "*.log",
+  "*.sqlite",
+  "*.db",
+]

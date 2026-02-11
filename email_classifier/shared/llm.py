@@ -11,7 +11,7 @@ def call_llm(
     system: str,
     user: str,
     temperature: float = 0.1,
-    max_tokens: int = 1200,
+    max_tokens: Optional[int] = None,
     timeout: int = 60,
     max_retries: int = 2,
     retry_backoff: float = 1.5,
@@ -19,13 +19,15 @@ def call_llm(
     last_err: Optional[Exception] = None
     for attempt in range(max_retries + 1):
         try:
-            resp = completion(
-                model=model,
-                messages=[{"role":"system","content":system},{"role":"user","content":user}],
-                temperature=temperature,
-                max_tokens=max_tokens,
-                timeout=timeout,
-            )
+            kwargs = {
+                "model": model,
+                "messages": [{"role":"system","content":system},{"role":"user","content":user}],
+                "temperature": temperature,
+                "timeout": timeout,
+            }
+            if max_tokens is not None:
+                kwargs["max_tokens"] = max_tokens
+            resp = completion(**kwargs)
             return resp["choices"][0]["message"]["content"]
         except Exception as e:
             last_err = e
@@ -77,7 +79,7 @@ def call_llm_json(
     user: str,
     schema: Optional[str] = None,
     temperature: float = 0.1,
-    max_tokens: int = 1200,
+    max_tokens: Optional[int] = None,
     timeout: int = 60,
     max_attempts: int = 3,
 ) -> Dict[str, Any]:
@@ -117,7 +119,7 @@ def call_llm_json_model(
     user: str,
     model_cls: Type[BaseModel],
     temperature: float = 0.1,
-    max_tokens: int = 1200,
+    max_tokens: Optional[int] = None,
     timeout: int = 60,
     max_attempts: int = 3,
 ) -> BaseModel:
