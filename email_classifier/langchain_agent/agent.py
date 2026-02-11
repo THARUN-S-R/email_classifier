@@ -37,6 +37,11 @@ from email_classifier.shared.prompts import (
 logger = logging.getLogger("email_classifier.langchain_agent")
 
 
+def _is_summary_query(question: str) -> bool:
+    q = (question or "").lower()
+    return any(k in q for k in ("summary", "summaries", "daily summary", "day summary"))
+
+
 def _dedupe_threads(items: List[Dict[str, Any]], limit: int = 5) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     seen = set()
@@ -205,10 +210,18 @@ def _sanitize_retrieved(retrieved: Dict[str, Any]) -> Dict[str, Any]:
     src = dict(retrieved or {})
     threads_src = [t for t in (src.get("threads") or []) if isinstance(t, dict)]
     sums_src = [s for s in (src.get("summaries") or []) if isinstance(s, dict)]
+    dedup_summaries: List[Dict[str, Any]] = []
+    seen_sum = set()
+    for s in sums_src:
+        key = (s.get("user_email_lc") or s.get("user_email") or "", s.get("day") or "")
+        if key in seen_sum:
+            continue
+        seen_sum.add(key)
+        dedup_summaries.append(s)
 
     return {
         "threads": [_thread_view(t) for t in threads_src[: int(os.getenv('FINAL_ANSWER_THREADS_TOP_N', '3'))]],
-        "summaries": sums_src[:5],
+        "summaries": dedup_summaries[:5],
     }
 
 
@@ -297,6 +310,15 @@ class LangChainAgent:
         t0 = time.perf_counter()
         logger.info("run: question_len=%s model=%s session_id=%s", len(question or ""), model, session_id)
         try:
+            # Deterministic fast-path for summary requests avoids tool-loop max-iteration failures.
+            if _is_summary_query(question):
+                logger.info("run: summary fast-path enabled")
+                plan = await asyncio.to_thread(_build_plan_sync, question)
+                retrieved = await asyncio.to_thread(_retrieve, question, plan)
+                answer = await _final_answer(question, retrieved)
+                logger.info("timing.total_arun_sec=%.3f", time.perf_counter() - t0)
+                return answer
+
             executor = self.create_agent(model)
             cfg = {"configurable": {"session_id": session_id or "default"}}
             out = await executor.ainvoke({"input": question}, config=cfg)
