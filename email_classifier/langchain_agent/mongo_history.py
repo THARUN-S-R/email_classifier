@@ -10,12 +10,14 @@ from pymongo import MongoClient
 
 _CLIENT: MongoClient | None = None
 
+
 def _get_client(uri: str) -> MongoClient:
     global _CLIENT
     if _CLIENT is None:
         _CLIENT = MongoClient(uri)
         atexit.register(_CLIENT.close)
     return _CLIENT
+
 
 class MongoChatHistory(BaseChatMessageHistory):
     """Stores a full chat as a single MongoDB document per session_id."""

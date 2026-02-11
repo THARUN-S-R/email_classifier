@@ -4,7 +4,8 @@ from datetime import datetime
 
 from email_classifier.shared.models import ThreadTriage
 
-P_RANK = {"P0":0, "P1":1, "P2":2, "P3":3}
+P_RANK = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+
 
 def render_summary_md(triages: list[ThreadTriage]) -> str:
     def best_rank(t: ThreadTriage) -> int:
@@ -12,9 +13,9 @@ def render_summary_md(triages: list[ThreadTriage]) -> str:
             return 99
         return min(P_RANK[a.priority] for a in t.actions)
 
-    actionable = [t for t in triages if t.email_type=="ACTION_REQUIRED" and t.action_required]
-    info = [t for t in triages if t.email_type=="INFORMATIONAL_ARCHIVE"]
-    irr = [t for t in triages if t.email_type=="IRRELEVANT"]
+    actionable = [t for t in triages if t.email_type == "ACTION_REQUIRED" and t.action_required]
+    info = [t for t in triages if t.email_type == "INFORMATIONAL_ARCHIVE"]
+    irr = [t for t in triages if t.email_type == "IRRELEVANT"]
 
     actionable.sort(key=best_rank)
 
@@ -56,14 +57,15 @@ def render_summary_md(triages: list[ThreadTriage]) -> str:
     lines.append("## Informational (archive)\n")
     lines.extend([f"- {(t.thread_ref or '(no-ref)')} — {(t.topic or 'FYI')}" for t in info[:30]])
     if len(info) > 30:
-        lines.append(f"\n_...and {len(info)-30} more._\n")
+        lines.append(f"\n_...and {len(info) - 30} more._\n")
 
     lines.append("\n## Irrelevant / Noise\n")
     lines.extend([f"- {(t.thread_ref or '(no-ref)')} — {(t.topic or 'Noise')}" for t in irr[:20]])
     if len(irr) > 20:
-        lines.append(f"\n_...and {len(irr)-20} more._\n")
+        lines.append(f"\n_...and {len(irr) - 20} more._\n")
 
     return "\n".join(lines)
+
 
 def render_user_day_summary_md(triages: list[ThreadTriage], user_email: str, day: str) -> str:
     def best_rank(t: ThreadTriage) -> int:
@@ -71,9 +73,9 @@ def render_user_day_summary_md(triages: list[ThreadTriage], user_email: str, day
             return 99
         return min(P_RANK[a.priority] for a in t.actions)
 
-    actionable = [t for t in triages if t.email_type=="ACTION_REQUIRED" and t.action_required]
-    info = [t for t in triages if t.email_type=="INFORMATIONAL_ARCHIVE"]
-    irr = [t for t in triages if t.email_type=="IRRELEVANT"]
+    actionable = [t for t in triages if t.email_type == "ACTION_REQUIRED" and t.action_required]
+    info = [t for t in triages if t.email_type == "INFORMATIONAL_ARCHIVE"]
+    irr = [t for t in triages if t.email_type == "IRRELEVANT"]
 
     actionable.sort(key=best_rank)
 
@@ -115,11 +117,11 @@ def render_user_day_summary_md(triages: list[ThreadTriage], user_email: str, day
     lines.append("## Informational (archive)\n")
     lines.extend([f"- {(t.thread_ref or '(no-ref)')} — {(t.topic or 'FYI')}" for t in info[:30]])
     if len(info) > 30:
-        lines.append(f"\n_...and {len(info)-30} more._\n")
+        lines.append(f"\n_...and {len(info) - 30} more._\n")
 
     lines.append("\n## Irrelevant / Noise\n")
     lines.extend([f"- {(t.thread_ref or '(no-ref)')} — {(t.topic or 'Noise')}" for t in irr[:20]])
     if len(irr) > 20:
-        lines.append(f"\n_...and {len(irr)-20} more._\n")
+        lines.append(f"\n_...and {len(irr) - 20} more._\n")
 
     return "\n".join(lines)

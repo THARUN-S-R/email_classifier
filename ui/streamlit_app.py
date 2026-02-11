@@ -14,7 +14,9 @@ DEFAULT_OUTDIR = os.getenv("OUT_DIR", "out")
 st.set_page_config(page_title="Email Ops Assistant", layout="wide")
 
 st.title("📩 Email Ops Assistant (Triage + Agent Q&A)")
-st.caption("Read-only assistant for prioritising workload and answering ad-hoc questions (grounded on ingested email threads).")
+st.caption(
+    "Read-only assistant for prioritising workload and answering ad-hoc questions (grounded on ingested email threads)."
+)
 
 with st.sidebar:
     st.header("Settings")
@@ -42,8 +44,9 @@ if "session_id" not in st.session_state:
 
 tab_chat, tab_summary = st.tabs(["Chat", "Daily Summary"])
 
+
 def call_agent(question: str) -> dict[str, Any]:
-    url = api_url.rstrip("/") + "/ask_langchain" #ask_langchain ask
+    url = api_url.rstrip("/") + "/ask_langchain"  # ask_langchain ask
     payload = {
         "question": question,
         "session_id": st.session_state["session_id"],
@@ -52,6 +55,7 @@ def call_agent(question: str) -> dict[str, Any]:
     resp = requests.post(url, json=payload, timeout=timeout_s)
     resp.raise_for_status()
     return resp.json()
+
 
 with tab_chat:
     st.subheader("Chat")

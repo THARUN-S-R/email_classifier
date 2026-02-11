@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 Priority = Literal["P0", "P1", "P2", "P3"]
 EmailType = Literal["ACTION_REQUIRED", "INFORMATIONAL_ARCHIVE", "IRRELEVANT"]
 
+
 class EmailMessage(BaseModel):
     subject: str | None = None
     body: str | None = None
@@ -20,9 +21,11 @@ class EmailMessage(BaseModel):
     class Config:
         populate_by_name = True
 
+
 class EmailThread(BaseModel):
     thread_id: str | None = None
     messages: list[EmailMessage]
+
 
 class ActionItem(BaseModel):
     action_item: str
@@ -30,6 +33,7 @@ class ActionItem(BaseModel):
     due: str | None = None
     priority: Priority
     blocking: bool = False
+
 
 class ThreadTriage(BaseModel):
     thread_ref: str | None = None
@@ -55,6 +59,7 @@ class ThreadTriage(BaseModel):
     customer_name: str | None = None
     customer_email: str | None = None
 
+
 class QueryFilter(BaseModel):
     claim_ref: str | None = None
     counterparty: str | None = None
@@ -71,8 +76,10 @@ class QueryFilter(BaseModel):
     sent_before: str | None = None
     sent_on: str | None = None
 
+
 class ThreadSelection(BaseModel):
     thread_keys: list[str] = Field(default_factory=list)
+
 
 class QueryPlan(BaseModel):
     thread_filter: dict[str, Any] | None = None

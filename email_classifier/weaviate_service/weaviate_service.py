@@ -9,6 +9,7 @@ from email_classifier.weaviate_service.weaviate_client import get_client
 
 logger = logging.getLogger("email_classifier.weaviate_schema")
 
+
 def ensure_schema():
     client = None
     try:

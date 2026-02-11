@@ -18,6 +18,7 @@ warn_if_missing_llm_keys()
 app = FastAPI(title="Email Ops Agent (LangChain)")
 logger = logging.getLogger("email_classifier.api")
 
+
 @app.middleware("http")
 async def add_request_id(request: Request, call_next):
     req_id = request.headers.get("x-request-id") or os.urandom(8).hex()
@@ -26,7 +27,9 @@ async def add_request_id(request: Request, call_next):
     response.headers["x-request-id"] = req_id
     return response
 
+
 lc_agent = LangChainAgent(max_steps=10)
+
 
 @app.on_event("startup")
 async def startup_checks():
@@ -36,13 +39,16 @@ async def startup_checks():
         # Keep API up so health/debug endpoints still work, but log clear startup issue.
         logger.exception("Startup schema ensure failed: %s", e)
 
+
 class AskRequest(BaseModel):
     question: str
     session_id: str | None = None
     history: list[dict[str, str]] | None = None
 
+
 class AskResponse(BaseModel):
     answer: str
+
 
 @app.post("/ask_langchain", response_model=AskResponse)
 async def ask_langchain(req: AskRequest):
@@ -56,8 +62,10 @@ async def ask_langchain(req: AskRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"LangChain agent error: {e}") from e
 
+
 # In-memory chat history (per session_id)
 _MEMORY: dict[str, list[dict[str, str]]] = {}
+
 
 @app.get("/health")
 def health():

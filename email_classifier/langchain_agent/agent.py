@@ -220,7 +220,10 @@ def _sanitize_retrieved(retrieved: dict[str, Any]) -> dict[str, Any]:
         dedup_summaries.append(s)
 
     return {
-        "threads": [_thread_view(t) for t in threads_src[: int(os.getenv('FINAL_ANSWER_THREADS_TOP_N', '3'))]],
+        "threads": [
+            _thread_view(t)
+            for t in threads_src[: int(os.getenv("FINAL_ANSWER_THREADS_TOP_N", "3"))]
+        ],
         "summaries": dedup_summaries[:5],
     }
 
@@ -258,7 +261,9 @@ async def _final_answer(question: str, retrieved: Any | None = None) -> str:
 @tool("final_answer")
 async def tool_final_answer(question: str, retrieved: Any | None = None) -> str:
     """Generate grounded answer from retrieved records."""
-    logger.info("tool_final_answer: question_len=%s has_retrieved=%s", len(question or ""), bool(retrieved))
+    logger.info(
+        "tool_final_answer: question_len=%s has_retrieved=%s", len(question or ""), bool(retrieved)
+    )
     return await _final_answer(question, retrieved)
 
 
@@ -276,20 +281,22 @@ class LangChainAgent:
             return self._executors[model]
         timeout_s = int(os.getenv("LANGCHAIN_REQUEST_TIMEOUT", "60"))
         llm = ChatOpenAI(model=model, temperature=0.0, timeout=timeout_s)
-        prompt = ChatPromptTemplate.from_messages([
-            (
-                "system",
-                "You are a tool-using insurance ops agent.\n"
-                "Always follow this order: build_plan -> retrieve -> final_answer.\n"
-                "Do not call tools repeatedly unless a call fails.\n"
-                "Never call build_plan more than once per question.\n"
-                "Never call final_answer before retrieve.\n"
-                "Keep responses factual and evidence-grounded.",
-            ),
-            MessagesPlaceholder(variable_name="chat_history"),
-            ("user", "{input}"),
-            ("assistant", "{agent_scratchpad}"),
-        ])
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "You are a tool-using insurance ops agent.\n"
+                    "Always follow this order: build_plan -> retrieve -> final_answer.\n"
+                    "Do not call tools repeatedly unless a call fails.\n"
+                    "Never call build_plan more than once per question.\n"
+                    "Never call final_answer before retrieve.\n"
+                    "Keep responses factual and evidence-grounded.",
+                ),
+                MessagesPlaceholder(variable_name="chat_history"),
+                ("user", "{input}"),
+                ("assistant", "{agent_scratchpad}"),
+            ]
+        )
         agent = create_openai_tools_agent(llm, self.tools, prompt)
         executor = AgentExecutor(
             agent=agent,
@@ -308,7 +315,9 @@ class LangChainAgent:
 
     async def arun(self, question: str, model: str, session_id: str | None = None) -> str:
         t0 = time.perf_counter()
-        logger.info("run: question_len=%s model=%s session_id=%s", len(question or ""), model, session_id)
+        logger.info(
+            "run: question_len=%s model=%s session_id=%s", len(question or ""), model, session_id
+        )
         try:
             # Deterministic fast-path for summary requests avoids tool-loop max-iteration failures.
             if _is_summary_query(question):
