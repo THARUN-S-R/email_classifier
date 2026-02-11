@@ -6,12 +6,10 @@ logger = logging.getLogger("email_classifier.config")
 
 # Collections
 THREAD_CLASS = "EmailThread"
-DETAIL_CLASS = "EmailThreadDetail"
 DAILY_SUMMARY_CLASS = "DailySummary"
 
 # Retrieval defaults
 THREAD_FETCH_LIMIT = int(os.getenv("THREAD_FETCH_LIMIT", "5"))
-DETAIL_FETCH_LIMIT = int(os.getenv("DETAIL_FETCH_LIMIT", "3"))
 SUMMARY_FETCH_LIMIT = int(os.getenv("SUMMARY_FETCH_LIMIT", "3"))
 FETCH_CANDIDATES_LIMIT = int(os.getenv("FETCH_CANDIDATES_LIMIT", "50"))
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+import logging
 from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
@@ -11,11 +12,13 @@ ROOT = Path(__file__).resolve().parents[1]
 from email_classifier.langchain_agent.agent import LangChainAgent
 from email_classifier.shared.logging import setup_logging, set_request_id
 from email_classifier.shared.config import warn_if_missing_llm_keys
+from email_classifier.weaviate_service.weaviate_service import ensure_schema
 
 load_dotenv()
 setup_logging()
 warn_if_missing_llm_keys()
 app = FastAPI(title="Email Ops Agent (LangChain)")
+logger = logging.getLogger("email_classifier.api")
 
 @app.middleware("http")
 async def add_request_id(request: Request, call_next):
@@ -26,6 +29,14 @@ async def add_request_id(request: Request, call_next):
     return response
 
 lc_agent = LangChainAgent(max_steps=10)
+
+@app.on_event("startup")
+async def startup_checks():
+    try:
+        ensure_schema()
+    except Exception as e:
+        # Keep API up so health/debug endpoints still work, but log clear startup issue.
+        logger.exception("Startup schema ensure failed: %s", e)
 
 class AskRequest(BaseModel):
     question: str

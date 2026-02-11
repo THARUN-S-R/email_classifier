@@ -4,7 +4,6 @@ import asyncio
 import json
 import logging
 import os
-import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -18,11 +17,9 @@ from email_classifier.chat_service.agent_tools import (
     bm25_search_threads,
     get_collection_properties,
     get_daily_summaries,
-    get_thread_detail,
     hybrid_search_summaries,
     hybrid_search_threads,
     semantic_search_threads,
-    search_threads,
 )
 from email_classifier.langchain_agent.mongo_history import MongoChatHistory
 from email_classifier.shared.config import MAX_DETAIL_CHARS
@@ -38,13 +35,6 @@ from email_classifier.shared.prompts import (
 )
 
 logger = logging.getLogger("email_classifier.langchain_agent")
-EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
-
-
-def _and_filter(left: Optional[Dict[str, Any]], right: Dict[str, Any]) -> Dict[str, Any]:
-    if not left:
-        return right
-    return {"op": "and", "conditions": [], "groups": [left, right]}
 
 
 def _dedupe_threads(items: List[Dict[str, Any]], limit: int = 5) -> List[Dict[str, Any]]:
@@ -62,7 +52,7 @@ def _dedupe_threads(items: List[Dict[str, Any]], limit: int = 5) -> List[Dict[st
 
 
 def _thread_view(t: Dict[str, Any]) -> Dict[str, Any]:
-    return {
+    out = {
         "thread_key": t.get("thread_key"),
         "thread_ref": t.get("thread_ref"),
         "email_type": t.get("email_type"),
@@ -75,19 +65,9 @@ def _thread_view(t: Dict[str, Any]) -> Dict[str, Any]:
         "urgency_reason": t.get("urgency_reason"),
         "latest_sent_at": t.get("latest_sent_at"),
     }
-
-
-def _detail_view(d: Dict[str, Any], include_full_text: bool) -> Dict[str, Any]:
-    out = {
-        "thread_key": d.get("thread_key"),
-        "thread_ref": d.get("thread_ref"),
-        "user_email_lc": d.get("user_email_lc"),
-        "participants_text": d.get("participants_text"),
-        "latest_sent_at": d.get("latest_sent_at"),
-        "message_count": d.get("message_count"),
-    }
-    if include_full_text and isinstance(d.get("full_text"), str):
-        out["full_text"] = d.get("full_text")
+    full_text = t.get("full_text")
+    if isinstance(full_text, str) and full_text:
+        out["full_text"] = full_text[:MAX_DETAIL_CHARS]
     return out
 
 
@@ -151,59 +131,20 @@ async def _refine_plan(question: str, plan: Dict[str, Any]) -> Dict[str, Any]:
 
 def _retrieve(question: str, plan: Optional[Any] = None) -> Dict[str, Any]:
     t0 = time.perf_counter()
-    q_email = None
-    m = EMAIL_RE.search(question or "")
-    if m:
-        q_email = m.group(0).lower()
-
     if isinstance(plan, str):
         try:
             plan = json.loads(plan)
         except Exception:
             plan = None
     if not isinstance(plan, dict):
-        # Fast path: explicit mailbox/email query skips LLM planning
-        if q_email:
-            plan = {
-                "thread_filter": {
-                    "op": "and",
-                    "conditions": [{"property": "user_email_lc", "operator": "equal", "type": "string", "value": q_email}],
-                    "groups": [],
-                },
-                "detail_filter": {
-                    "op": "and",
-                    "conditions": [{"property": "user_email_lc", "operator": "equal", "type": "string", "value": q_email}],
-                    "groups": [],
-                },
-                "summary_filter": {
-                    "op": "and",
-                    "conditions": [{"property": "user_email_lc", "operator": "equal", "type": "string", "value": q_email}],
-                    "groups": [],
-                },
-                "search_query": question,
-                "need_detail": False,
-            }
-            logger.info("tool_retrieve: fast-plan user_email_lc=%s", q_email)
-        else:
-            # Sync fallback for non-email queries
-            plan = _build_plan_sync(question)
+        plan = _build_plan_sync(question)
     plan_obj = QueryPlan.model_validate(plan)
     search_q = plan_obj.search_query or question
 
-    if q_email:
-        eq = {
-            "op": "and",
-            "conditions": [{"property": "user_email_lc", "operator": "equal", "type": "string", "value": q_email}],
-            "groups": [],
-        }
-        plan_obj.thread_filter = _and_filter(plan_obj.thread_filter, eq)
-        plan_obj.detail_filter = _and_filter(plan_obj.detail_filter, eq)
-        plan_obj.summary_filter = _and_filter(plan_obj.summary_filter, eq)
-
-    retrieve_limit = int(os.getenv("RETRIEVE_THREADS_LIMIT", "3"))
+    retrieve_limit = int(os.getenv("RETRIEVE_THREADS_LIMIT", "5"))
     # Stage 1: hybrid + bm25 (with and without filter)
-    threads_unf = hybrid_search_threads(search_q, retrieve_limit, 0.8, None)
-    threads_flt = hybrid_search_threads(search_q, retrieve_limit, 0.8, plan_obj.thread_filter)
+    threads_unf = hybrid_search_threads(search_q, retrieve_limit, 0.7, None)
+    threads_flt = hybrid_search_threads(search_q, retrieve_limit, 0.7, plan_obj.thread_filter)
     threads_unf += bm25_search_threads(search_q, retrieve_limit, None)
     threads_flt += bm25_search_threads(search_q, retrieve_limit, plan_obj.thread_filter)
     # Prefer filtered results first, then backfill from unfiltered.
@@ -234,16 +175,6 @@ def _retrieve(question: str, plan: Optional[Any] = None) -> Dict[str, Any]:
         if k and k not in seen:
             seen.add(k)
             thread_ids.append(k)
-    # Fetch full text only for top-N threads to reduce final LLM prompt size.
-    detail_top_n = int(os.getenv("RETRIEVE_DETAIL_TOP_N", "3"))
-    detail_ids = thread_ids[: max(1, detail_top_n)]
-
-    details = []
-    for tid in detail_ids:
-        d = get_thread_detail(tid)
-        if isinstance(d, dict):
-            details.append(d)
-
     summaries: List[Dict[str, Any]] = []
     q = question.lower()
     if "summary" in q or "summaries" in q:
@@ -255,18 +186,17 @@ def _retrieve(question: str, plan: Optional[Any] = None) -> Dict[str, Any]:
             summaries.extend(s2)
 
     logger.info(
-        "timing.retrieve_sec=%.3f threads=%s details=%s summaries=%s",
+        "timing.retrieve_sec=%.3f threads=%s summaries=%s",
         time.perf_counter() - t0,
         len(threads),
-        len(details),
         len(summaries),
     )
-    return {"threads": threads, "details": details, "summaries": summaries}
+    return {"threads": threads, "summaries": summaries}
 
 
 @tool("retrieve")
 def tool_retrieve(question: str, plan: Optional[Any] = None) -> Dict[str, Any]:
-    """Retrieve top 5 merged thread candidates (with and without filters), then fetch full details."""
+    """Retrieve top thread candidates (with and without filters) from EmailThread."""
     logger.info("tool_retrieve: question_len=%s has_plan=%s", len(question or ""), bool(plan))
     return _retrieve(question, plan)
 
@@ -274,21 +204,10 @@ def tool_retrieve(question: str, plan: Optional[Any] = None) -> Dict[str, Any]:
 def _sanitize_retrieved(retrieved: Dict[str, Any]) -> Dict[str, Any]:
     src = dict(retrieved or {})
     threads_src = [t for t in (src.get("threads") or []) if isinstance(t, dict)]
-    details_src = [d for d in (src.get("details") or []) if isinstance(d, dict)]
     sums_src = [s for s in (src.get("summaries") or []) if isinstance(s, dict)]
-
-    # Summary-first payload: compact thread views for all, full_text only for top few details.
-    detail_full_n = int(os.getenv("FINAL_ANSWER_FULLTEXT_TOP_N", "2"))
-    safe_details: List[Dict[str, Any]] = []
-    for i, d in enumerate(details_src):
-        v = _detail_view(d, include_full_text=i < detail_full_n)
-        if isinstance(v.get("full_text"), str):
-            v["full_text"] = v["full_text"][:MAX_DETAIL_CHARS]
-        safe_details.append(v)
 
     return {
         "threads": [_thread_view(t) for t in threads_src[: int(os.getenv('FINAL_ANSWER_THREADS_TOP_N', '3'))]],
-        "details": safe_details,
         "summaries": sums_src[:5],
     }
 

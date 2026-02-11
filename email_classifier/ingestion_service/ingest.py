@@ -207,6 +207,14 @@ def build_thread_full_text(thread: EmailThread) -> str:
         )
     return "\n---\n".join(parts)
 
+def build_message_bodies_text(thread: EmailThread) -> str:
+    bodies = []
+    for m in thread.messages:
+        body = redact_for_index(m.body or "").strip()
+        if body:
+            bodies.append(body)
+    return "\n\n".join(bodies)
+
 def stable_thread_key(thread: EmailThread) -> str:
     if thread.thread_id:
         return thread.thread_id
@@ -291,7 +299,7 @@ def main():
 
     ensure_dir(args.outdir)
     if not args.no_weaviate:
-        from email_classifier.weaviate_service.weaviate_service import ensure_schema, THREAD_CLASS, DETAIL_CLASS
+        from email_classifier.weaviate_service.weaviate_service import ensure_schema, THREAD_CLASS
         from email_classifier.weaviate_service.weaviate_client import get_client
         ensure_schema()
 
@@ -304,16 +312,14 @@ def main():
 
     client = None
     threads_col = None
-    detail_col = None
     summary_col = None
     if not args.no_weaviate:
         try:
-            from email_classifier.weaviate_service.weaviate_service import THREAD_CLASS, DETAIL_CLASS, DAILY_SUMMARY_CLASS
+            from email_classifier.weaviate_service.weaviate_service import THREAD_CLASS, DAILY_SUMMARY_CLASS
             from email_classifier.weaviate_service.weaviate_client import get_client
             client = get_client()
             client.connect()
             threads_col = client.collections.get(THREAD_CLASS)
-            detail_col = client.collections.get(DETAIL_CLASS)
             summary_col = client.collections.get(DAILY_SUMMARY_CLASS)
         except Exception as e:
             raise RuntimeError(f"Weaviate connection failed: {e}") from e
@@ -327,7 +333,6 @@ def main():
     default_user = os.getenv("MAILBOX_EMAIL") or None
     triage_index: List[dict] = []
     thread_rows: List[tuple[str, dict]] = []
-    detail_rows: List[tuple[str, dict]] = []
     batch_size = int(os.getenv("INGEST_BATCH_SIZE", "100"))
     for idx, thread in enumerate(tqdm(threads, desc="Triaging threads")):
         try:
@@ -378,7 +383,7 @@ def main():
 
             thread_key = stable_thread_key(thread)
             thread_uuid = stable_uuid(thread_key)
-            if threads_col is not None and detail_col is not None:
+            if threads_col is not None:
                 participants_text = build_participants_text(triage, participants, user_email)
                 thread_rows.append((thread_uuid, {
                     "thread_id": thread.thread_id or "",
@@ -389,6 +394,7 @@ def main():
                     "action_required": triage.action_required,
                     "priority_best": best_priority(triage),
                     "topic": triage.topic or "",
+                    "full_text": build_thread_full_text(thread),
                     "category": triage.category or "",
                     "actions_text": " | ".join([a.action_item for a in triage.actions if a.action_item]),
                     "counterparty": (triage.entities.get("counterparty") if isinstance(triage.entities, dict) else "") or "",
@@ -397,18 +403,6 @@ def main():
                     "participants_text": participants_text,
                     "latest_sent_at": latest_dt.isoformat() if latest_dt else "",
                     "urgency_reason": triage.urgency_reason or "",
-                }))
-
-                detail_rows.append((thread_uuid, {
-                    "thread_key": thread_key or "",
-                    "thread_ref": triage.thread_ref or "",
-                    "user_email_lc": (user_email or "").lower(),
-                    "full_text": build_thread_full_text(thread),
-                    "participants_text": participants_text,
-                    "messages_json": json.dumps([m.model_dump() for m in thread.messages], ensure_ascii=False),
-                    "latest_sent_at": latest_dt.isoformat() if latest_dt else "",
-                    "earliest_sent_at": earliest_dt.isoformat() if earliest_dt else "",
-                    "message_count": len(thread.messages),
                 }))
             triage_index.append({
                 "triage": triage,
@@ -438,9 +432,8 @@ def main():
             logger.exception("Failed processing thread_id=%s: %s", getattr(thread, "thread_id", None), e)
             continue
 
-    if threads_col is not None and detail_col is not None:
+    if threads_col is not None:
         batch_upsert_many(threads_col, thread_rows, chunk_size=batch_size)
-        batch_upsert_many(detail_col, detail_rows, chunk_size=batch_size)
 
     # Write summary artifacts
     out_threads = os.path.join(args.outdir, "threads_output.json")

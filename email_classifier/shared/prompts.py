@@ -74,7 +74,6 @@ Filter spec format:
 
 Collections:
 - thread_filter fields: thread_ref, email_type, action_required, priority_best, counterparty, handler_name, customer_name, user_email_lc, latest_sent_at, participants_text, topic.
-- detail_filter fields: user_email_lc, latest_sent_at, participants_text, thread_ref.
 - summary_filter fields: day, user_email_lc.
 
 Rules:
@@ -84,7 +83,6 @@ Rules:
 - For date ranges use gte/lte ISO strings.
 - Keep filters null if uncertain.
 - Set search_query as raw question when semantic retrieval is useful.
-- Set need_detail=true when user asks for messages/thread details.
 """
 
 QUERY_REFINE_SYSTEM = """Refine filter JSON when results are weak or empty.
@@ -132,7 +130,7 @@ Schema:
 
 AGENT_ANSWER_SYSTEM = """You are a read-only insurance ops assistant.
 PROMPT_VERSION: v4_improved
-Use only retrieved data.
+Use only retrieved data (threads and daily summaries).
 Be concise and factual.
 Always include an Evidence section listing thread_ref values used.
 If no matches, say so clearly."""

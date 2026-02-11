@@ -5,8 +5,8 @@ import re
 import os
 from typing import Any, Dict, List, Optional
 from email_classifier.weaviate_service.weaviate_client import get_fresh_client
-from email_classifier.weaviate_service.weaviate_service import THREAD_CLASS, DETAIL_CLASS, DAILY_SUMMARY_CLASS
-from email_classifier.shared.config import THREAD_FETCH_LIMIT, DETAIL_FETCH_LIMIT, SUMMARY_FETCH_LIMIT
+from email_classifier.weaviate_service.weaviate_service import THREAD_CLASS, DAILY_SUMMARY_CLASS
+from email_classifier.shared.config import THREAD_FETCH_LIMIT, SUMMARY_FETCH_LIMIT
 from weaviate.classes.query import Filter, Rerank
 
 logger = logging.getLogger("email_classifier.agent_tools")
@@ -35,7 +35,7 @@ def get_collection_properties() -> Dict[str, List[Dict[str, Any]]]:
     try:
         client.connect()
         out: Dict[str, List[Dict[str, Any]]] = {}
-        for cname in (THREAD_CLASS, DETAIL_CLASS, DAILY_SUMMARY_CLASS):
+        for cname in (THREAD_CLASS, DAILY_SUMMARY_CLASS):
             props: List[Dict[str, Any]] = []
             try:
                 col = client.collections.get(cname)
@@ -48,6 +48,16 @@ def get_collection_properties() -> Dict[str, List[Dict[str, Any]]]:
         return out
     finally:
         client.close()
+
+def _get_collection_safe(client, collection_name: str):
+    try:
+        if not client.collections.exists(collection_name):
+            logger.warning("Collection not found in Weaviate schema: %s", collection_name)
+            return None
+        return client.collections.get(collection_name)
+    except Exception as e:
+        logger.exception("Failed resolving collection '%s': %s", collection_name, e)
+        return None
 
 
 def _rerank_enabled() -> bool:
@@ -78,14 +88,12 @@ def _run_with_optional_rerank(search_fn, *, query_text: str, rerank_prop: str, *
 
 THREAD_PROPS = {
     "thread_id","thread_key","thread_ref","user_email_lc","email_type","action_required",
-    "priority_best","topic","category","actions_text","counterparty","thread_summary",
+    "priority_best","topic","full_text","category","actions_text","counterparty","thread_summary",
     "latest_message","participants_text","latest_sent_at","urgency_reason",
 }
 
-DETAIL_PROPS = {
-    "thread_key","thread_ref","user_email_lc","full_text",
-    "participants_text","messages_json","latest_sent_at","earliest_sent_at","message_count",
-}
+# Backward-compatible alias for code paths that still refer to detail filters.
+DETAIL_PROPS = set(THREAD_PROPS)
 
 SUMMARY_PROPS = {
     "day","user_email","user_email_lc","summary_md","total_threads","action_required",
@@ -236,7 +244,9 @@ def search_threads(filter_spec: Optional[Dict[str, Any]], limit: int = THREAD_FE
     client = get_fresh_client()
     try:
         client.connect()
-        col = client.collections.get(THREAD_CLASS)
+        col = _get_collection_safe(client, THREAD_CLASS)
+        if col is None:
+            return []
 
         flt = _filter_from_spec(filter_spec, allowed_props=THREAD_PROPS)
         logger.info("search_threads: filter=%s", _filter_summary(filter_spec))
@@ -256,7 +266,9 @@ def semantic_search_threads(query: str, limit: int = THREAD_FETCH_LIMIT, filter_
     client = get_fresh_client()
     try:
         client.connect()
-        col = client.collections.get(THREAD_CLASS)
+        col = _get_collection_safe(client, THREAD_CLASS)
+        if col is None:
+            return []
         flt = _filter_from_spec(filter_spec, allowed_props=THREAD_PROPS)
         logger.info("semantic_search_threads: query_len=%s filter=%s", len(query or ""), _filter_summary(filter_spec))
         logger.info("semantic_search_threads: rerank=%s", _rerank_enabled())
@@ -285,7 +297,9 @@ def bm25_search_threads(query: str, limit: int = THREAD_FETCH_LIMIT, filter_spec
     client = get_fresh_client()
     try:
         client.connect()
-        col = client.collections.get(THREAD_CLASS)
+        col = _get_collection_safe(client, THREAD_CLASS)
+        if col is None:
+            return []
         flt = _filter_from_spec(filter_spec, allowed_props=THREAD_PROPS)
         logger.info("bm25_search_threads: query_len=%s filter=%s", len(query or ""), _filter_summary(filter_spec))
         logger.info("bm25_search_threads: rerank=%s", _rerank_enabled())
@@ -315,7 +329,9 @@ def hybrid_search_threads(query: str, limit: int = THREAD_FETCH_LIMIT, alpha: fl
     client = get_fresh_client()
     try:
         client.connect()
-        col = client.collections.get(THREAD_CLASS)
+        col = _get_collection_safe(client, THREAD_CLASS)
+        if col is None:
+            return []
         flt = _filter_from_spec(filter_spec, allowed_props=THREAD_PROPS)
         logger.info("hybrid_search_threads: query_len=%s filter=%s", len(query or ""), _filter_summary(filter_spec))
         logger.info("hybrid_search_threads: rerank=%s", _rerank_enabled())
@@ -346,9 +362,14 @@ def get_thread_detail(thread_key: str) -> Optional[Dict[str, Any]]:
     client = get_fresh_client()
     try:
         client.connect()
-        col = client.collections.get(DETAIL_CLASS)
+        col = _get_collection_safe(client, THREAD_CLASS)
+        if col is None:
+            return None
         flt = Filter.by_property("thread_key").equal(thread_key)
         res = col.query.fetch_objects(limit=1, filters=flt)
+        if not res.objects:
+            ref_flt = Filter.by_property("thread_ref").equal(thread_key)
+            res = col.query.fetch_objects(limit=1, filters=ref_flt)
         if res.objects:
             return res.objects[0].properties
         return None
@@ -358,106 +379,30 @@ def get_thread_detail(thread_key: str) -> Optional[Dict[str, Any]]:
     finally:
         client.close()
 
-def semantic_search_details(query: str, limit: int = DETAIL_FETCH_LIMIT, filter_spec: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    query = _clean_query(query)
-    client = get_fresh_client()
-    try:
-        client.connect()
-        col = client.collections.get(DETAIL_CLASS)
-        flt = _filter_from_spec(filter_spec, allowed_props=DETAIL_PROPS)
-        logger.info("semantic_search_details: query_len=%s filter=%s", len(query or ""), _filter_summary(filter_spec))
-        logger.info("semantic_search_details: rerank=%s", _rerank_enabled())
-        res = _run_with_optional_rerank(
-            col.query.near_text,
-            query_text=query,
-            rerank_prop="full_text",
-            limit=limit,
-            filters=flt,
-        ) if flt else _run_with_optional_rerank(
-            col.query.near_text,
-            query_text=query,
-            rerank_prop="full_text",
-            limit=limit,
-        )
-        out = [o.properties for o in res.objects]
-        return out
-    except Exception as e:
-        logger.exception("semantic_search_details failed: %s", e)
-        return []
-    finally:
-        client.close()
+def semantic_search_details(query: str, limit: int = THREAD_FETCH_LIMIT, filter_spec: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    # Compatibility shim: details collection removed, use thread search.
+    return semantic_search_threads(query=query, limit=limit, filter_spec=filter_spec)
 
-def bm25_search_details(query: str, limit: int = DETAIL_FETCH_LIMIT, filter_spec: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    client = get_fresh_client()
-    try:
-        client.connect()
-        col = client.collections.get(DETAIL_CLASS)
-        flt = _filter_from_spec(filter_spec, allowed_props=DETAIL_PROPS)
-        logger.info("bm25_search_details: query_len=%s filter=%s", len(query or ""), _filter_summary(filter_spec))
-        logger.info("bm25_search_details: rerank=%s", _rerank_enabled())
-        res = _run_with_optional_rerank(
-            col.query.bm25,
-            query_text=query,
-            rerank_prop="full_text",
-            limit=limit,
-            filters=flt,
-        ) if flt else _run_with_optional_rerank(
-            col.query.bm25,
-            query_text=query,
-            rerank_prop="full_text",
-            limit=limit,
-        )
-        out = [o.properties for o in res.objects]
-        logger.info("semantic_search_details: fetched=%s", len(out))
-        return out
-    except Exception as e:
-        logger.exception("bm25_search_details failed: %s", e)
-        return []
-    finally:
-        client.close()
+def bm25_search_details(query: str, limit: int = THREAD_FETCH_LIMIT, filter_spec: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    # Compatibility shim: details collection removed, use thread search.
+    return bm25_search_threads(query=query, limit=limit, filter_spec=filter_spec)
 
-def hybrid_search_details(query: str, limit: int = DETAIL_FETCH_LIMIT, alpha: float = 0.5, filter_spec: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-    query = _clean_query(query)
-    client = get_fresh_client()
-    try:
-        client.connect()
-        col = client.collections.get(DETAIL_CLASS)
-        flt = _filter_from_spec(filter_spec, allowed_props=DETAIL_PROPS)
-        logger.info("hybrid_search_details: query_len=%s filter=%s", len(query or ""), _filter_summary(filter_spec))
-        logger.info("hybrid_search_details: rerank=%s", _rerank_enabled())
-        res = _run_with_optional_rerank(
-            col.query.hybrid,
-            query_text=query,
-            rerank_prop="full_text",
-            alpha=alpha,
-            limit=limit,
-            filters=flt,
-        ) if flt else _run_with_optional_rerank(
-            col.query.hybrid,
-            query_text=query,
-            rerank_prop="full_text",
-            alpha=alpha,
-            limit=limit,
-        )
-        out = [o.properties for o in res.objects]
-        logger.info("bm25_search_details: fetched=%s", len(out))
-        return out
-    except Exception as e:
-        logger.exception("hybrid_search_details failed: %s", e)
-        return []
-    finally:
-        client.close()
+def hybrid_search_details(query: str, limit: int = THREAD_FETCH_LIMIT, alpha: float = 0.5, filter_spec: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    # Compatibility shim: details collection removed, use thread search.
+    return hybrid_search_threads(query=query, limit=limit, alpha=alpha, filter_spec=filter_spec)
 
 def get_daily_summaries(filter_spec: Optional[Dict[str, Any]], limit: int = SUMMARY_FETCH_LIMIT) -> List[Dict[str, Any]]:
     client = get_fresh_client()
     try:
         client.connect()
-        col = client.collections.get(DAILY_SUMMARY_CLASS)
+        col = _get_collection_safe(client, DAILY_SUMMARY_CLASS)
+        if col is None:
+            return []
         flt = _filter_from_spec(filter_spec, allowed_props=SUMMARY_PROPS)
         logger.info("get_daily_summaries: filter=%s", _filter_summary(filter_spec))
         res = col.query.fetch_objects(limit=limit, filters=flt) if flt else col.query.fetch_objects(limit=limit)
         out = [o.properties for o in res.objects]
-        logger.info("hybrid_search_details: fetched=%s", len(out))
+        logger.info("get_daily_summaries: fetched=%s", len(out))
         return out
     except Exception as e:
         logger.exception("get_daily_summaries failed: %s", e)
@@ -469,7 +414,9 @@ def bm25_search_summaries(query: str, limit: int = 5) -> List[Dict[str, Any]]:
     client = get_fresh_client()
     try:
         client.connect()
-        col = client.collections.get(DAILY_SUMMARY_CLASS)
+        col = _get_collection_safe(client, DAILY_SUMMARY_CLASS)
+        if col is None:
+            return []
         logger.info("bm25_search_summaries: rerank=%s", _rerank_enabled())
         res = _run_with_optional_rerank(
             col.query.bm25,
@@ -490,7 +437,9 @@ def hybrid_search_summaries(query: str, limit: int = 5, alpha: float = 0.5) -> L
     client = get_fresh_client()
     try:
         client.connect()
-        col = client.collections.get(DAILY_SUMMARY_CLASS)
+        col = _get_collection_safe(client, DAILY_SUMMARY_CLASS)
+        if col is None:
+            return []
         logger.info("hybrid_search_summaries: rerank=%s", _rerank_enabled())
         res = _run_with_optional_rerank(
             col.query.hybrid,
